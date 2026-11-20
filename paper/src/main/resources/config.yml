@@ -1,0 +1,40 @@
+# StonyPerms bridge (Paper)
+#
+# The bridge only reads from the StonyPerms HTTP API. It never writes
+# permissions data and never changes users or groups.
+api:
+  # StonyPerms Gate API. Prefer loopback; for a remote backend use a private
+  # network (tailnet/WireGuard) and HTTPS.
+  url: "http://127.0.0.1:8737"
+
+  # Token resolution order: STONYPERMS_BRIDGE_TOKEN env var, api.token, api.token-file.
+  # Do not commit a real token.
+  token: ""
+  token-file: "token"
+
+  connect-timeout-ms: 1500
+  request-timeout-ms: 2500
+
+# Must match the Gate backend server name used by StonyPerms contexts.
+# Leave empty to send no server context.
+server-name: ""
+
+# How often online players are refreshed (minimum 5 seconds).
+refresh-seconds: 30
+
+# If the API is unavailable, keep using the last snapshot for this long.
+# After this window, fail-closed mode removes all bridge-managed grants.
+stale-grace-seconds: 300
+
+# When no usable snapshot exists, deny StonyPerms-managed permissions instead
+# of falling back to Bukkit defaults.
+fail-closed: true
+
+# Serve a cached snapshot during the stale-grace window while the API is down.
+use-stale-on-error: true
+
+# Apply attachments to operators too. Set false to leave ops fully vanilla.
+apply-to-ops: true
+
+# Verbose refresh failure logging. Tokens are never logged.
+debug: false
