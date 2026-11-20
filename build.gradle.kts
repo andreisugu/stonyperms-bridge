@@ -1,6 +1,8 @@
+val releaseVersion = providers.gradleProperty("releaseVersion").getOrElse("0.1.0-SNAPSHOT")
+
 allprojects {
     group = "dev.stonyperms"
-    version = "0.1.0-SNAPSHOT"
+    version = releaseVersion
 }
 
 subprojects {
