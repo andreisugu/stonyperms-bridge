@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "stonyperms-bridge",
+  "version": "${version}",
+  "name": "StonyPerms Bridge",
+  "description": "Fabric permissions provider backed by the StonyPerms Gate HTTP API.",
+  "authors": [
+    "andreisugu"
+  ],
+  "license": "Apache-2.0",
+  "environment": "server",
+  "entrypoints": {
+    "main": [
+      "dev.stonyperms.bridge.fabric.StonyPermsBridgeMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.0",
+    "fabric-api": "*",
+    "fabric-permissions-api-v0": ">=0.7.0",
+    "minecraft": "~26.3",
+    "java": ">=25"
+  }
+}
