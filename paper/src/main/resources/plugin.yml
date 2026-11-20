@@ -1,0 +1,16 @@
+name: StonyPermsBridge
+version: '0.1.0'
+main: dev.stonyperms.bridge.paper.StonyPermsBridgePlugin
+api-version: '26.3'
+description: Applies StonyPerms (Gate) permissions to Paper via the read-only HTTP API.
+author: andreisugu
+website: https://github.com/andreisugu/stonyperms-bridge
+commands:
+  spb:
+    description: StonyPerms bridge administration
+    usage: /spb <status|refresh|check|reload>
+    permission: stonyperms.bridge.admin
+permissions:
+  stonyperms.bridge.admin:
+    description: Manage the StonyPerms bridge
+    default: op
