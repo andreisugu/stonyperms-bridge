@@ -40,6 +40,9 @@ public record PaperBridgeConfig(
         if (!scheme.equals("http") && !scheme.equals("https")) {
             throw new PaperConfigException("api.url must use http or https");
         }
+        if (apiUrl.getHost() == null) {
+            throw new PaperConfigException("api.url must include a host");
+        }
 
         String token = resolveToken(config, dataFolder, envToken);
         if (token.length() < MIN_TOKEN_LENGTH) {

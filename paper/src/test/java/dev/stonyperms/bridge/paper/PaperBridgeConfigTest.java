@@ -55,6 +55,16 @@ class PaperBridgeConfigTest {
         assertEquals("file-token-0123456789", parsed.token());
     }
 
+
+    @Test
+    void rejectsUrlWithoutHost() {
+        YamlConfiguration config = new YamlConfiguration();
+        config.set("api.url", "http:/api");
+        config.set("api.token", "inline-token-0123456789");
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(config, dataFolder, null));
+    }
+
     @Test
     void rejectsMissingShortAndInvalidConfig() {
         YamlConfiguration missing = new YamlConfiguration();

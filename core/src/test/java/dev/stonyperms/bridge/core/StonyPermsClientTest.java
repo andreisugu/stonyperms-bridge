@@ -126,9 +126,50 @@ class StonyPermsClientTest {
         }
     }
 
+
+    @Test
+    void rejectsSnapshotsWithMissingRequiredFields() throws Exception {
+        UUID id = UUID.randomUUID();
+        start(exchange -> respond(exchange, 200, """
+                {"schemaVersion":1,"revision":1,"ttlSeconds":30,"user":{},"groups":[]}
+                """));
+
+        try (StonyPermsClient client = client()) {
+            IOException error = assertThrows(IOException.class,
+                    () -> client.fetchSnapshot(id, Map.of(), null));
+            assertTrue(error.getMessage().contains("nodes"));
+        }
+    }
+
+    @Test
+    void boundsTheWholeExchangeIncludingBodyRead() throws Exception {
+        UUID id = UUID.randomUUID();
+        start(exchange -> {
+            exchange.sendResponseHeaders(200, 100);
+            exchange.getResponseBody().write('{');
+            exchange.getResponseBody().flush();
+            try {
+                Thread.sleep(3_000);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        try (StonyPermsClient client = client(Duration.ofMillis(300))) {
+            long started = System.nanoTime();
+            assertThrows(IOException.class, () -> client.fetchSnapshot(id, Map.of(), null));
+            long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+            assertTrue(elapsedMillis < 2_000, "request exceeded its whole-exchange deadline: " + elapsedMillis + "ms");
+        }
+    }
+
     private StonyPermsClient client() {
+        return client(Duration.ofSeconds(2));
+    }
+
+    private StonyPermsClient client(Duration requestTimeout) {
         return new StonyPermsClient(
-                URI.create(baseUrl()), "test-token-0123456789", Duration.ofSeconds(1), Duration.ofSeconds(2));
+                URI.create(baseUrl()), "test-token-0123456789", Duration.ofSeconds(1), requestTimeout);
     }
 
     private String baseUrl() {

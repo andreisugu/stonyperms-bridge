@@ -56,6 +56,16 @@ class FabricBridgeConfigTest {
         assertTrue(config.isRemotePlainHttp());
     }
 
+
+    @Test
+    void rejectsUrlWithoutHost() throws Exception {
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {"api": {"url": "http:/api", "token": "inline-token-0123456789"}}
+                """);
+        assertThrows(FabricBridgeConfig.ConfigException.class,
+                () -> FabricBridgeConfig.load(configDir, null));
+    }
+
     @Test
     void missingTokenIsRejected() {
         assertThrows(FabricBridgeConfig.ConfigException.class,

@@ -27,13 +27,16 @@ On a staging Gate:
 5. Check that the token never appears in logs and that `/healthz` is the only
    unauthenticated route.
 
-Rollback: set `api_enabled = false` and restart Gate. No data migration exists.
+Rollback for the proxy API: set `api_enabled = false` and restart Gate. This
+is not a backend rollback: if adapters remain installed with fail-closed on,
+they eventually deny bridge-managed permissions. Remove/disable the backend
+adapters to restore their pre-bridge behavior. No data migration exists.
 
 ## Phase 2 — one Paper staging server
 
 1. Install the Paper jar on a non-production backend.
 2. Point it at the staging Gate API; set `fail-closed: false` and
-   `apply-to-ops: false` for the first boot to avoid locking anyone out.
+   `apply-to-ops: false` for the first boot so ops stay vanilla while you validate.
 3. Verify `/spb status`, `/spb check`, and that no permissions changed
    unexpectedly.
 4. Compare a sample of `player.hasPermission(...)` results (via a test plugin
@@ -87,15 +90,15 @@ Rollback: remove the mod jar; no persistent state.
   `refresh-seconds` (or one `/spb refresh`).
 - API outage behavior matches the configured fail-closed/stale policy.
 - No token appears in logs, config committed to git, or API responses.
-- Rollback requires only removing the backend adapter or disabling the API;
-  no data cleanup.
+- Rollback requires removing/disabling the backend adapter; disabling the API
+alone is an outage, not a rollback. No data cleanup is required.
 
 ## Open decisions for the owner
 
 - Is `fail-closed: true` acceptable for the first production backend, or should
   the first canary run with `false` and a short stale grace?
-- Should Paper ops be fully managed by StonyPerms (`apply-to-ops: false`) or
-  keep vanilla op defaults as break-glass?
+- Should Paper ops be managed by StonyPerms (`apply-to-ops: true`) or left
+  fully vanilla (`false`) as break-glass?
 - Which backend name(s) must be used in `server-name` to match existing
   StonyPerms contexts?
 - Is a tailnet address stable enough for backend-to-Gate traffic, or is a TLS

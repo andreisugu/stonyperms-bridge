@@ -2,6 +2,9 @@ package dev.stonyperms.bridge.core;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.io.IOException;
 import java.net.URI;
@@ -13,6 +16,10 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Minimal read-only client for the StonyPerms HTTP API. Uses only the JDK
@@ -55,7 +62,7 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             builder.header("If-None-Match", etag);
         }
 
-        HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(builder.build());
         String responseEtag = response.headers().firstValue("ETag").orElse(null);
         if (response.statusCode() == 304) {
             return new FetchResult(null, responseEtag != null ? responseEtag : etag, true);
@@ -63,26 +70,20 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
         if (response.statusCode() != 200) {
             throw failure(response.statusCode());
         }
-        Snapshot snapshot = gson.fromJson(response.body(), Snapshot.class);
-        if (snapshot == null) {
-            throw new IOException("StonyPerms API returned an empty snapshot");
-        }
+        Snapshot snapshot = parseSnapshot(response.body());
         return new FetchResult(snapshot, responseEtag, false);
     }
 
     @Override
     public long fetchRevision() throws IOException, InterruptedException {
-        HttpResponse<String> response = http.send(
-                request("/v1/revision").header("Accept", "application/json").build(),
-                HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(
+                request("/v1/revision").header("Accept", "application/json").build());
         if (response.statusCode() != 200) {
             throw failure(response.statusCode());
         }
-        RevisionResponse revision = gson.fromJson(response.body(), RevisionResponse.class);
-        if (revision == null) {
-            throw new IOException("StonyPerms API returned an empty revision");
-        }
-        return revision.revision;
+        JsonObject object = parseObject(response.body(), "revision");
+        require(object, "revision", "revision");
+        return gson.fromJson(object, RevisionResponse.class).revision;
     }
 
     @Override
@@ -99,15 +100,87 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body), StandardCharsets.UTF_8))
                 .build();
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(request);
         if (response.statusCode() != 200) {
             throw failure(response.statusCode());
         }
-        CheckResponse parsed = gson.fromJson(response.body(), CheckResponse.class);
-        if (parsed == null) {
-            throw new IOException("StonyPerms API returned an empty check result");
-        }
+        JsonObject object = parseObject(response.body(), "check result");
+        require(object, "value", "check result");
+        require(object, "source", "check result");
+        require(object, "revision", "check result");
+        CheckResponse parsed = gson.fromJson(object, CheckResponse.class);
         return new CheckResult(parsed.value, parsed.source, parsed.revision);
+    }
+
+    private Snapshot parseSnapshot(String body) throws IOException {
+        JsonObject object = parseObject(body, "snapshot");
+        require(object, "schemaVersion", "snapshot");
+        require(object, "revision", "snapshot");
+        require(object, "ttlSeconds", "snapshot");
+        requireObject(object, "user", "snapshot");
+        requireArray(object, "groups", "snapshot");
+        requireArray(object, "nodes", "snapshot");
+        Snapshot snapshot = gson.fromJson(object, Snapshot.class);
+        if (snapshot == null) {
+            throw new IOException("StonyPerms API returned an empty snapshot");
+        }
+        return snapshot;
+    }
+
+    private JsonObject parseObject(String body, String what) throws IOException {
+        JsonElement element;
+        try {
+            element = JsonParser.parseString(body);
+        } catch (RuntimeException error) {
+            throw new IOException("StonyPerms API returned invalid JSON for " + what, error);
+        }
+        if (element == null || !element.isJsonObject()) {
+            throw new IOException("StonyPerms API returned a non-object " + what);
+        }
+        return element.getAsJsonObject();
+    }
+
+    private static void require(JsonObject object, String field, String what) throws IOException {
+        if (!object.has(field) || object.get(field).isJsonNull()) {
+            throw new IOException("StonyPerms API " + what + " is missing required field '" + field + "'");
+        }
+    }
+
+    private static void requireArray(JsonObject object, String field, String what) throws IOException {
+        require(object, field, what);
+        if (!object.get(field).isJsonArray()) {
+            throw new IOException("StonyPerms API " + what + " field '" + field + "' must be an array");
+        }
+    }
+
+    private static void requireObject(JsonObject object, String field, String what) throws IOException {
+        require(object, field, what);
+        if (!object.get(field).isJsonObject()) {
+            throw new IOException("StonyPerms API " + what + " field '" + field + "' must be an object");
+        }
+    }
+
+    private HttpResponse<String> send(HttpRequest request) throws IOException, InterruptedException {
+        CompletableFuture<HttpResponse<String>> future =
+                http.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+        try {
+            return future.get(requestTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException error) {
+            future.cancel(true);
+            throw new IOException("StonyPerms API request exceeded " + requestTimeout.toMillis() + " ms", error);
+        } catch (ExecutionException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IOException("StonyPerms API request failed", cause);
+        } catch (InterruptedException error) {
+            future.cancel(true);
+            throw error;
+        }
     }
 
     private HttpRequest.Builder request(String path) {

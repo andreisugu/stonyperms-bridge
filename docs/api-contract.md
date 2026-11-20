@@ -66,9 +66,12 @@ Contract details this client depends on:
 
 `GET /v1/revision` → `{"revision":42}`
 
-`GET /v1/players/...` returns `ETag: "sp-42"`. Send it as `If-None-Match`; a
-`304` means the cached snapshot is still current. The client extends the fresh
-window on 304 without re-applying anything.
+`GET /v1/players/...` returns an ETag such as
+`"sp-<generation>-42-<fingerprint>"`. Send it as `If-None-Match`; a `304` means
+the cached snapshot is still current. The client extends the fresh window on
+304 without re-applying anything. The generation changes on proxy restart and
+the fingerprint covers effective state such as temporary-node expiry, so a 304
+is never reused for a different grant.
 
 ### Authoritative check
 

@@ -71,6 +71,9 @@ public record FabricBridgeConfig(
             if (!scheme.equals("http") && !scheme.equals("https")) {
                 throw new ConfigException("api.url must use http or https");
             }
+            if (apiUrl.getHost() == null) {
+                throw new ConfigException("api.url must include a host");
+            }
 
             String token = resolveToken(api, configDir, envToken);
             if (token.length() < MIN_TOKEN_LENGTH) {

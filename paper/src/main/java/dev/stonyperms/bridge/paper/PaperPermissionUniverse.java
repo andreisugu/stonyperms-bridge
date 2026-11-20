@@ -3,8 +3,10 @@ package dev.stonyperms.bridge.paper;
 import org.bukkit.permissions.Permission;
 import org.bukkit.plugin.PluginManager;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /** Known Bukkit permissions, including everything declared in plugin.yml files. */
@@ -17,12 +19,17 @@ public final class PaperPermissionUniverse {
     }
 
     public Set<String> collect() {
-        Set<String> names = new HashSet<>();
+        return registered().keySet();
+    }
+
+    /** Registered permissions by lowercase name, including their child maps. */
+    public Map<String, Permission> registered() {
+        Map<String, Permission> permissions = new HashMap<>();
         for (Permission permission : pluginManager.getPermissions()) {
             if (permission != null && permission.getName() != null) {
-                names.add(permission.getName().toLowerCase(Locale.ROOT));
+                permissions.put(permission.getName().toLowerCase(Locale.ROOT), permission);
             }
         }
-        return names;
+        return permissions;
     }
 }

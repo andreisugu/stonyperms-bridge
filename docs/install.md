@@ -91,8 +91,7 @@ not use per-server contexts, it can be empty.
   cannot be intercepted. If a plugin checks such a node, it sees its own
   default. Ask the plugin to declare its permissions in `plugin.yml`, or add a
   literal StonyPerms node for it.
-- Ops keep vanilla defaults unless `apply-to-ops: false`; StonyPerms grants and
-  denials still apply to them when true.
+- `apply-to-ops: true` (default) applies StonyPerms attachments to ops; `false` skips ops entirely and leaves them vanilla.
 
 ## 3. Fabric
 

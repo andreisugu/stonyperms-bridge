@@ -12,6 +12,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BridgeServiceTest {
@@ -56,6 +57,20 @@ class BridgeServiceTest {
         assertEquals("\"rev-4\"", source.etags.get(1));
         assertEquals(Tri.TRUE, service.resolve(id, Map.of(), "x").value());
         assertTrue(service.cache().entry(new SnapshotCache.Key(id, "")) != null);
+    }
+
+
+    @Test
+    void failedRefreshKeepsLastGoodSnapshot() throws Exception {
+        UUID id = UUID.randomUUID();
+        FakeSource source = new FakeSource();
+        source.snapshots.add(new SnapshotSource.FetchResult(
+                snapshot(1, 30, List.of(node("x", true)), List.of()), "\"rev-1\"", false));
+        BridgeService service = service(source, true, true);
+        service.refresh(id, Map.of());
+
+        assertThrows(java.io.IOException.class, () -> service.refresh(id, Map.of()));
+        assertEquals(Tri.TRUE, service.resolve(id, Map.of(), "x").value());
     }
 
     @Test

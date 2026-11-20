@@ -11,8 +11,11 @@ it like a database read credential, not a public API.
 - One shared bearer token per deployment.
 - Proxy: constant-time comparison (`crypto/subtle`), minimum 16 characters in
   code, 32+ random characters recommended.
-- Token sources, in order: `STONYPERMS_API_TOKEN` (proxy) /
-  `STONYPERMS_BRIDGE_TOKEN` (backend), token file, inline config.
+- Proxy token order: `STONYPERMS_API_TOKEN`, then `api_token_file`, then
+  inline `api_token`.
+- Backend token order: `STONYPERMS_BRIDGE_TOKEN`, then inline `api.token`,
+  then `api.token-file`. When rotating a token file, clear any higher-priority
+  env/inline value or the backend will keep using it.
 - The proxy refuses to start the API without a token. The backend disables
   itself if it cannot resolve one.
 - Tokens are never placed in URLs, logs, error messages, or API responses.
@@ -79,9 +82,9 @@ StonyPerms metadata or prefixes.
   tolerate with stale grants.
 - A defined `undefined` result is not a failure; it means StonyPerms has no
   opinion and the platform default applies.
-- Paper ops retain op defaults unless `apply-to-ops: false`. If you need
-  StonyPerms to fully own operator permissions, set `apply-to-ops: false` only
-  after confirming your break-glass path.
+- Paper ops are managed by StonyPerms when `apply-to-ops: true` (default).
+  Setting it to `false` skips ops entirely and leaves them vanilla; it does not
+  make StonyPerms deny them. Keep a console/vanilla-op break-glass path.
 
 ## Availability and abuse
 

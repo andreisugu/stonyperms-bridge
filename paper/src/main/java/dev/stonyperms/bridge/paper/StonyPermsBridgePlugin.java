@@ -2,7 +2,9 @@ package dev.stonyperms.bridge.paper;
 
 import dev.stonyperms.bridge.core.BridgeService;
 import dev.stonyperms.bridge.core.CheckResult;
+import dev.stonyperms.bridge.core.Contexts;
 import dev.stonyperms.bridge.core.PermissionResolver;
+import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.StonyPermsClient;
 import org.bukkit.Bukkit;
@@ -16,6 +18,7 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -40,6 +43,8 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
     private final PermissionResolver resolver = new PermissionResolver();
     private final PaperPermissionApplier applier = new PaperPermissionApplier(this);
     private final Set<UUID> refreshing = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, Set<String>> managedKeys = new ConcurrentHashMap<>();
+    private final Map<UUID, BukkitTask> reapplyTasks = new ConcurrentHashMap<>();
     private final AtomicLong lastFailureLogAt = new AtomicLong();
 
     private ExecutorService io;
@@ -75,6 +80,11 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
     @Override
     public void onDisable() {
         stopScheduler();
+        for (BukkitTask task : reapplyTasks.values()) {
+            task.cancel();
+        }
+        reapplyTasks.clear();
+        managedKeys.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
         }
@@ -105,6 +115,11 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
                 newClient, cache, resolver, newConfig.failClosed(), newConfig.useStaleOnError());
 
         stopScheduler();
+        for (BukkitTask task : reapplyTasks.values()) {
+            task.cancel();
+        }
+        reapplyTasks.clear();
+        managedKeys.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
         }
@@ -150,12 +165,17 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
+        UUID id = event.getPlayer().getUniqueId();
+        cancelReapply(id);
+        managedKeys.remove(id);
         applier.clear(event.getPlayer());
-        refreshing.remove(event.getPlayer().getUniqueId());
+        refreshing.remove(id);
     }
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
+        // Apply the destination-world cache immediately; the refresh updates it.
+        applyPlayer(event.getPlayer());
         refreshAsync(event.getPlayer());
     }
 
@@ -188,21 +208,76 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
     }
 
     private void applyPlayer(Player player) {
+        UUID id = player.getUniqueId();
         if (player.isOp() && !bridgeConfig.applyToOps()) {
+            cancelReapply(id);
             applier.clear(player);
             return;
         }
         Map<String, String> contexts = contexts(player);
-        SnapshotCache.Lookup lookup = service.lookup(player.getUniqueId(), contexts);
-        if (!lookup.present()) {
+        SnapshotCache.Key key = new SnapshotCache.Key(id, Contexts.key(contexts));
+        SnapshotCache.Lookup lookup = service.lookup(id, contexts);
+        if (!lookup.present() || (lookup.state() == SnapshotCache.State.STALE && !bridgeConfig.useStaleOnError())) {
+            cancelReapply(id);
+            applyUnavailable(player);
+            return;
+        }
+
+        Snapshot snapshot = lookup.snapshot();
+        Set<String> permissions = PaperMaterialization.permissions(snapshot, universe.collect());
+        service.materialize(id, contexts, permissions).ifPresentOrElse(values -> {
+            Map<String, Boolean> safe = PaperMaterialization.withoutConflictingParents(
+                    values, universe.registered());
+            managedKeys.put(id, Set.copyOf(values.keySet()));
+            applier.apply(player, safe);
+            scheduleReapply(player, key, snapshot);
+        }, () -> {
+            cancelReapply(id);
+            applyUnavailable(player);
+        });
+    }
+
+    private void applyUnavailable(Player player) {
+        UUID id = player.getUniqueId();
+        if (!bridgeConfig.failClosed()) {
             applier.apply(player, Map.of());
             return;
         }
-        Set<String> permissions = PaperMaterialization.permissions(lookup.snapshot(), universe.collect());
-        service.materialize(player.getUniqueId(), contexts, permissions)
-                .ifPresentOrElse(
-                        values -> applier.apply(player, values),
-                        () -> applier.apply(player, Map.of()));
+        Set<String> permissions = new java.util.HashSet<>(universe.collect());
+        permissions.addAll(managedKeys.getOrDefault(id, Set.of()));
+        applier.apply(player, PaperMaterialization.failClosedValues(permissions));
+    }
+
+    private void scheduleReapply(Player player, SnapshotCache.Key key, Snapshot snapshot) {
+        UUID id = player.getUniqueId();
+        cancelReapply(id);
+        SnapshotCache.Entry entry = service.cache().entry(key);
+        long delayMillis = PaperReapply.nextDelayMillis(
+                entry,
+                snapshot,
+                System.currentTimeMillis(),
+                bridgeConfig.staleGraceSeconds() * 1000L,
+                bridgeConfig.useStaleOnError(),
+                5 * 60 * 1000L);
+        long ticks = Math.max(1L, Math.min(delayMillis, 5 * 60 * 1000L) / 50L);
+        BukkitTask task = getServer().getScheduler().runTaskLater(this, () -> {
+            reapplyTasks.remove(id);
+            if (!isEnabled()) {
+                return;
+            }
+            Player online = Bukkit.getPlayer(id);
+            if (online != null && online.isOnline()) {
+                applyPlayer(online);
+            }
+        }, ticks);
+        reapplyTasks.put(id, task);
+    }
+
+    private void cancelReapply(UUID id) {
+        BukkitTask old = reapplyTasks.remove(id);
+        if (old != null) {
+            old.cancel();
+        }
     }
 
     private Map<String, String> contexts(Player player) {

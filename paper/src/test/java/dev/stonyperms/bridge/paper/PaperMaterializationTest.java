@@ -9,10 +9,47 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.bukkit.permissions.Permission;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PaperMaterializationTest {
+
+
+    @Test
+    void explicitChildDenialSurvivesParentExpansion() {
+        Map<String, Boolean> values = Map.of(
+                "example.parent", true,
+                "example.use", false);
+        Map<String, Permission> registered = Map.of(
+                "example.parent", new Permission("example.parent", Map.of("example.use", true)),
+                "example.use", new Permission("example.use"));
+
+        Map<String, Boolean> safe = PaperMaterialization.withoutConflictingParents(values, registered);
+
+        assertFalse(safe.containsKey("example.parent"));
+        assertFalse(safe.get("example.use"));
+    }
+
+    @Test
+    void parentIsDroppedWhenAChildHasNoExplicitValue() {
+        Map<String, Boolean> values = Map.of("example.parent", true);
+        Map<String, Permission> registered = Map.of(
+                "example.parent", new Permission("example.parent", Map.of("example.use", true)));
+
+        Map<String, Boolean> safe = PaperMaterialization.withoutConflictingParents(values, registered);
+
+        assertFalse(safe.containsKey("example.parent"));
+    }
+
+    @Test
+    void failClosedDeniesKnownPermissionsButNotBridgeAdmin() {
+        Map<String, Boolean> values = PaperMaterialization.failClosedValues(
+                Set.of("example.use", "stonyperms.bridge.admin"));
+        assertFalse(values.get("example.use"));
+        assertFalse(values.containsKey("stonyperms.bridge.admin"));
+    }
 
     @Test
     void addsLiteralNodesButNotWildcards() {

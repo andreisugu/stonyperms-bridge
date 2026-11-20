@@ -2,12 +2,13 @@ package dev.stonyperms.bridge.fabric;
 
 import dev.stonyperms.bridge.core.BridgeService;
 import dev.stonyperms.bridge.core.CheckResult;
+import dev.stonyperms.bridge.core.Contexts;
 import dev.stonyperms.bridge.core.Decision;
 import dev.stonyperms.bridge.core.PermissionResolver;
+import dev.stonyperms.bridge.core.RefreshGate;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.StonyPermsClient;
-import dev.stonyperms.bridge.core.Tri;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import org.slf4j.Logger;
@@ -32,9 +33,10 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     private final StonyPermsClient client;
     private final SnapshotCache cache;
     private final BridgeService service;
-    private final PermissionResolver resolver = new PermissionResolver();
     private final ExecutorService io;
+    private final ExecutorService checks;
     private final ScheduledExecutorService scheduler;
+    private final RefreshGate refreshGate = new RefreshGate(64);
     private final Map<UUID, LastSnapshot> lastSnapshots = new ConcurrentHashMap<>();
     private final AtomicLong lastFailureLogAt = new AtomicLong();
     private volatile String lastError = "";
@@ -49,9 +51,14 @@ public final class FabricBridgeRuntime implements AutoCloseable {
                 Duration.ofMillis(config.requestTimeoutMs()));
         this.cache = new SnapshotCache(config.staleGraceSeconds() * 1000L);
         this.service = new BridgeService(
-                client, cache, resolver, config.failClosed(), config.useStaleOnError());
+                client, cache, new PermissionResolver(), config.failClosed(), config.useStaleOnError());
         this.io = Executors.newFixedThreadPool(2, runnable -> {
             Thread thread = new Thread(runnable, "stonyperms-bridge-http");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.checks = Executors.newFixedThreadPool(2, runnable -> {
+            Thread thread = new Thread(runnable, "stonyperms-bridge-check");
             thread.setDaemon(true);
             return thread;
         });
@@ -79,19 +86,37 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     public void refreshAsync(ServerPlayer player) {
         UUID id = player.getUUID();
         Map<String, String> contexts = contexts(player);
-        io.submit(() -> {
-            try {
-                service.refresh(id, contexts);
-                SnapshotCache.Lookup lookup = service.lookup(id, contexts);
-                if (lookup.present()) {
-                    lastSnapshots.put(id, new LastSnapshot(lookup.snapshot(), contexts));
+        String key = id + "|" + Contexts.key(contexts);
+        if (!refreshGate.tryBegin(key)) {
+            return;
+        }
+        try {
+            io.submit(() -> {
+                try {
+                    service.refresh(id, contexts);
+                    SnapshotCache.Lookup lookup = service.lookup(id, contexts);
+                    if (lookup.present()) {
+                        lastSnapshots.compute(id, (ignored, existing) -> {
+                            Snapshot snapshot = lookup.snapshot();
+                            if (existing != null && existing.snapshot().revision() > snapshot.revision()) {
+                                return existing;
+                            }
+                            return new LastSnapshot(snapshot, contexts);
+                        });
+                    }
+                    lastError = "";
+                } catch (Exception error) {
+                    lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
+                    noteFailure();
+                } finally {
+                    refreshGate.end(key);
                 }
-                lastError = "";
-            } catch (Exception error) {
-                lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
-                noteFailure();
-            }
-        });
+            });
+        } catch (RuntimeException error) {
+            refreshGate.end(key);
+            lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
+            noteFailure();
+        }
     }
 
     public Decision resolve(ServerPlayer player, String permission) {
@@ -104,24 +129,14 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     public Decision resolveOffline(UUID uuid, String permission) {
         LastSnapshot last = lastSnapshots.get(uuid);
-        if (last == null) {
-            return new Decision(config.failClosed() ? Tri.FALSE : Tri.UNDEFINED, "bridge:offline-unavailable");
-        }
-        return resolver.resolve(last.snapshot(), permission, last.contexts());
+        Map<String, String> contexts = last == null ? Map.of() : last.contexts();
+        return service.resolve(uuid, contexts, permission);
     }
 
     public Optional<String> optionOffline(UUID uuid, String key) {
         LastSnapshot last = lastSnapshots.get(uuid);
-        if (last == null) {
-            return Optional.empty();
-        }
-        Snapshot snapshot = last.snapshot();
-        String value = switch (key) {
-            case "prefix" -> snapshot.user().prefix();
-            case "suffix" -> snapshot.user().suffix();
-            default -> snapshot.user().meta().get(key);
-        };
-        return value == null || value.isEmpty() ? Optional.empty() : Optional.of(value);
+        Map<String, String> contexts = last == null ? Map.of() : last.contexts();
+        return service.option(uuid, contexts, key);
     }
 
     public CompletableFuture<CheckResult> authoritativeCheck(ServerPlayer player, String permission) {
@@ -133,7 +148,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             } catch (Exception error) {
                 throw new java.util.concurrent.CompletionException(error);
             }
-        }, io);
+        }, checks);
     }
 
     public String status() {
@@ -141,6 +156,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         return "StonyPerms bridge: api=" + config.apiUrl()
                 + ", server=" + (config.serverName().isEmpty() ? "(none)" : config.serverName())
                 + ", cached=" + cache.size()
+                + ", refreshing=" + refreshGate.inFlight()
                 + ", failClosed=" + config.failClosed()
                 + ", staleGrace=" + config.staleGraceSeconds() + "s"
                 + ", lastError=" + error;
@@ -168,6 +184,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     public void close() {
         scheduler.shutdownNow();
         io.shutdownNow();
+        checks.shutdownNow();
         client.close();
     }
 

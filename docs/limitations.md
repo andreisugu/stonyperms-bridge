@@ -18,6 +18,12 @@ Wildcards are expanded against that universe. Consequences:
 - A plugin that checks an undeclared node will not see a StonyPerms wildcard.
   It sees its own default. Adding a literal StonyPerms node with that exact key
   makes it work; better, ask the plugin to declare its permissions.
+- Bukkit expands registered parent permissions into their declared children
+  during recalculation, and the overwrite order is not guaranteed. If a
+  registered parent has a child that is not explicitly materialized with the
+  same value, the parent is omitted from the attachment so an explicit child
+  denial or an undefined child cannot be altered. A plugin checking that parent
+  node itself may therefore see its default instead of the inherited grant.
 - Permissions registered later (after the snapshot was applied) are picked up on
   the next refresh, which rebuilds the universe.
 - This is the same fundamental constraint lightweight attachment-based
@@ -80,11 +86,11 @@ deployments need one API per proxy or a future multi-token version.
 
 ## Ops and break-glass
 
-Paper ops keep vanilla op defaults when `apply-to-ops: true` unless a
-StonyPerms node explicitly denies them. If the API is down and `fail-closed` is
-on, ops may still have op-only permissions; this is intentional so an operator
-can repair the bridge. Set `apply-to-ops: false` to make StonyPerms deny ops
-too, but keep a console/break-glass path.
+With `apply-to-ops: true` (default), Paper ops also receive the StonyPerms
+attachment; unmanaged nodes still fall back to vanilla op defaults. With
+`apply-to-ops: false`, the bridge skips ops entirely, so they remain vanilla;
+this does not make StonyPerms deny them. Console/vanilla-op break-glass remains
+available in both modes.
 
 Fabric `/spb` is always available to console and vanilla ops for the same
 reason.

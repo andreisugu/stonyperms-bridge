@@ -108,7 +108,7 @@ local snapshot cache.
   off).
 - A defined `undefined` answer means StonyPerms has no opinion, so the platform
   default applies. That is different from "the bridge has no data".
-- Paper operators keep their vanilla op defaults unless `apply-to-ops: false`.
+- Paper operators are managed by StonyPerms by default (`apply-to-ops: true`); set it to `false` to leave ops fully vanilla.
 
 ## Known limitations
 
