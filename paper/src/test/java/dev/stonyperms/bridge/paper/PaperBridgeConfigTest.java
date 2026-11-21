@@ -36,6 +36,9 @@ class PaperBridgeConfigTest {
         assertEquals(30_000L, parsed.sseReconnectMaxMs());
         assertTrue(parsed.integrationsPlaceholderApi());
         assertTrue(parsed.integrationsVault());
+        assertTrue(parsed.chatEnabled());
+        assertEquals("{prefix}{name}{suffix}&r&7: &f{message}", parsed.chatFormat());
+        assertTrue(parsed.tablistEnabled());
         assertFalse(parsed.isRemotePlainHttp());
     }
 

@@ -54,5 +54,13 @@ integrations:
   placeholderapi: true
   vault: true
 
+# Chat and display-name prefix formatting driven by StonyPerms snapshots.
+chat:
+  enabled: true
+  format: "{prefix}{name}{suffix}&r&7: &f{message}"
+
+tablist:
+  enabled: true
+
 # Verbose refresh failure logging. Tokens are never logged.
 debug: false
