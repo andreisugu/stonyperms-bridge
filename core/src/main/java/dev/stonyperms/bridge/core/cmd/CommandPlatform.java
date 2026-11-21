@@ -33,4 +33,19 @@ public interface CommandPlatform {
     String statusSummary();
 
     Map<String, String> defaultContexts();
+
+    /** Returns registered plugin/platform permission keys for Web Editor autocomplete and Tree Viewer. */
+    default List<String> collectKnownPermissions() {
+        return List.of();
+    }
+
+    /** Returns backend context suggestions such as world names and server name. */
+    default Map<String, List<String>> collectExtraContexts() {
+        return Map.of();
+    }
+
+    /** Sends a clickable URL message on platforms that support rich text components. */
+    default void sendUrlMessage(Object sender, String prefix, String url, String hoverHint) {
+        sendMessage(sender, prefix + " " + url);
+    }
 }

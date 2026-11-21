@@ -12,6 +12,11 @@ import dev.stonyperms.bridge.core.StonyPermsClient;
 import dev.stonyperms.bridge.core.StonyPermsEventStream;
 import dev.stonyperms.bridge.core.cmd.BridgeCommandHandler;
 import dev.stonyperms.bridge.core.cmd.CommandPlatform;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -630,6 +635,40 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         @Override
         public Map<String, String> defaultContexts() {
             return StonyPermsBridgePlugin.this.defaultContexts();
+        }
+
+        @Override
+        public List<String> collectKnownPermissions() {
+            return universe == null ? List.of() : universe.collect().stream().sorted().toList();
+        }
+
+        @Override
+        public Map<String, List<String>> collectExtraContexts() {
+            Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+            if (!bridgeConfig.serverName().isEmpty()) {
+                out.put("server", List.of(bridgeConfig.serverName()));
+            }
+            List<String> worlds = Bukkit.getWorlds().stream().map(org.bukkit.World::getName).sorted().toList();
+            if (!worlds.isEmpty()) {
+                out.put("world", worlds);
+            }
+            return out;
+        }
+
+        @Override
+        public void sendUrlMessage(Object sender, String prefix, String url, String hoverHint) {
+            if (!(sender instanceof CommandSender cs)) {
+                return;
+            }
+            Component comp = Component.text(prefix + " ", NamedTextColor.GREEN)
+                    .append(Component.text(url, NamedTextColor.AQUA, TextDecoration.UNDERLINED)
+                            .clickEvent(ClickEvent.openUrl(url))
+                            .hoverEvent(HoverEvent.showText(Component.text(hoverHint, NamedTextColor.YELLOW))));
+            if (Bukkit.isPrimaryThread() || !isEnabled()) {
+                cs.sendMessage(comp);
+            } else {
+                getServer().getScheduler().runTask(StonyPermsBridgePlugin.this, () -> cs.sendMessage(comp));
+            }
         }
     }
 }

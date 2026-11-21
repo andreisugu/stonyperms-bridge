@@ -57,6 +57,7 @@ Endpoints mapped in `StonyPermsClient`:
 - **Users:** `POST /v1/users` (`ensureUser` with `createOffline` flag), `DELETE /v1/users/{id}`, `POST /v1/users/{id}/parents` (`mode`: `add` | `set` | `accumulate`, `durationSeconds`, `expiry`, `contexts`, `setPrimary`), `DELETE /v1/users/{id}/parents/{group}` (contexts via query params), `PUT /v1/users/{id}/primary-group`, `POST /v1/users/{id}/permissions`, `DELETE /v1/users/{id}/permissions`, `PUT/DELETE /v1/users/{id}/meta/{key}`, `POST /v1/users/{id}/prefixes`, `DELETE /v1/users/{id}/prefixes/{priority}`, `POST /v1/users/{id}/suffixes`, `DELETE /v1/users/{id}/suffixes/{priority}`, `POST /v1/users/{id}/promote`, `POST /v1/users/{id}/demote`, `POST /v1/users/{id}/clear`, `POST /v1/users/{id}/batch`.
 - **Groups:** `POST /v1/groups`, `PATCH /v1/groups/{name}`, `DELETE /v1/groups/{name}`, `POST/DELETE /v1/groups/{name}/permissions`, `POST /v1/groups/{name}/parents`, `DELETE /v1/groups/{name}/parents/{parent}`, `PUT/DELETE /v1/groups/{name}/meta/{key}`, `POST /v1/groups/{name}/prefixes`, `DELETE /v1/groups/{name}/prefixes/{priority}`, `POST /v1/groups/{name}/suffixes`, `DELETE /v1/groups/{name}/suffixes/{priority}`.
 - **Tracks:** `POST /v1/tracks`, `PUT /v1/tracks/{name}`, `DELETE /v1/tracks/{name}`.
+- **StonyPermsWeb:** `POST /v1/editor/sessions`, `POST /v1/editor/applyedits`, `POST /v1/tree/sessions`, `POST /v1/verbose/sessions`.
 - **Admin:** `GET /v1/logs` (`limit`, `targetType`, `target`, `actor`), `POST /v1/reload`.
 
 ## Client Behavior & Compatibility
