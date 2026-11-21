@@ -1,102 +1,52 @@
-# Limitations (first slice)
+# Limitations & Operational Boundaries (v0.2)
 
-These are deliberate boundaries, not hidden behavior.
+These are deliberate design boundaries in `stonyperms-bridge` `0.2.0` and `gate-stonyperms`.
 
 ## Paper: no arbitrary on-demand permission hook
 
-Bukkit's `Permissible.hasPermission(String)` is a map lookup. There is no
-standard provider API that lets a plugin answer a node it has never seen.
+Bukkit's `Permissible.hasPermission(String)` is a map lookup rather than a callback hook. The Paper adapter materializes a finite permission universe:
 
-The Paper adapter therefore materializes a finite universe:
+- every `Permission` registered with `PluginManager` (including `plugin.yml` declarations);
+- every literal (non-wildcard) node in the player's StonyPerms snapshot.
 
-- every `Permission` registered with `PluginManager` (including `plugin.yml`
-  declarations, because plugins register them on load);
-- every literal (non-wildcard) node in the StonyPerms snapshot.
+Wildcards are expanded against that declared universe:
 
-Wildcards are expanded against that universe. Consequences:
+- Undeclared nodes checked by plugins will not match a StonyPerms wildcard unless the plugin registers the node in `plugin.yml` or a matching literal node exists in StonyPerms.
+- If a registered Bukkit parent permission has a declared child not explicitly materialized with the same boolean value, the parent node is omitted from the attachment so child denials or undefined children are not overridden by Bukkit recalculation.
+- Dynamically registered permissions appear on the next SSE-triggered or scheduled refresh.
 
-- A plugin that checks an undeclared node will not see a StonyPerms wildcard.
-  It sees its own default. Adding a literal StonyPerms node with that exact key
-  makes it work; better, ask the plugin to declare its permissions.
-- Bukkit expands registered parent permissions into their declared children
-  during recalculation, and the overwrite order is not guaranteed. If a
-  registered parent has a child that is not explicitly materialized with the
-  same value, the parent is omitted from the attachment so an explicit child
-  denial or an undefined child cannot be altered. A plugin checking that parent
-  node itself may therefore see its default instead of the inherited grant.
-- Permissions registered later (after the snapshot was applied) are picked up on
-  the next refresh, which rebuilds the universe.
-- This is the same fundamental constraint lightweight attachment-based
-  permission bridges have. LuckPerms solves it by injecting a custom
-  `Permissible`; that is version-coupled NMS/CraftBukkit work and is not in this
-  slice.
+## Fabric: `fabric-permissions-api` scope & provider exclusivity
 
-## Fabric: only fabric-permissions-api consumers
+- Listeners cover `PermissionCheckEvent`, `OptionRequestEvent`, `OfflinePermissionCheckEvent`, and `OfflineOptionRequestEvent`. Mods relying purely on raw vanilla permission levels without `fabric-permissions-api` are not intercepted (intentionally avoiding fragile NMS/mixin `ServerPlayer.permissions()` overrides).
+- `fabric-permissions-api` uses the first non-`DEFAULT` listener; never run a second permission provider (such as LuckPerms Fabric) alongside the bridge.
 
-The mod registers `PermissionCheckEvent`, `OptionRequestEvent`, and the offline
-events. Mods that call `Permissions.check(...)` get correct wildcard/context
-behavior. Mods that use raw vanilla permission levels do not.
+## Single-line bridge token files
 
-Minecraft 26.3 introduced `net.minecraft.server.permissions.PermissionSet` and
-`PermissionLevel`. A future mixin can replace `ServerPlayer.permissions()` and
-map permission atoms/levels to StonyPerms nodes, but that is a separate,
-version-sensitive change. It is intentionally not included.
+`gate-stonyperms` (`LoadTokens`) supports up to 4 newline-separated tokens and `#` comments per tier for zero-downtime key rotation, **but Paper (`PaperBridgeConfig`) and Fabric (`FabricBridgeConfig`) read token files as a single trimmed string**. Give each bridge backend a dedicated single-token `0600` file; never deploy a multi-line rotation file directly to a Paper or Fabric host.
 
-Also, `fabric-permissions-api` uses the first non-`DEFAULT` listener. Running
-two providers (for example LuckPerms Fabric plus this bridge) is undefined.
-Use exactly one.
+## Write path & idempotency boundaries
+
+- Writes are **opt-in and fail closed** (`write.enabled = false` by default). Backends without a distinct write token never issue write requests.
+- **Vault async writes:** When `write.enabled = true`, Vault `Permission` and `Chat` mutating calls dispatch asynchronously via `CompletableFuture` on the bridge I/O pool and return `true` immediately without blocking the server main thread; they return `false` when writes are disabled. Group list reads in `StonyPermsVaultPermission` rely on a cached snapshot from `fetchAllGroups`.
+- **In-memory idempotency window:** Gate's `Idempotency-Key` store is bounded in-memory (`4096` entries, `15m` TTL) and resets on Gate restart. External callers such as store fulfillment agents must retain their own durable order ledger and treat idempotency keys as short-window retry protection rather than permanent storage.
+- **No silent offline UUID creation on path mutations:** Writing by username to `/v1/users/{id}/...` fails with `404 user_not_found` if Gate has never seen that player. Programmatic callers provisioning brand-new offline/pre-join buyers must call `ensureUser(..., createOffline=true)` (`POST /v1/users`) or pass a verified Mojang UUID first.
 
 ## Contexts
 
-Snapshots are requested with `server` and `world` by default. Custom contexts
-(region, gamemode, dimension-specific keys) are supported by the API but the
-adapters only send those two. A plugin that needs a custom context must call
-`/v1/check` (Paper `/spb check`) or the bridge would need a context-provider
-extension.
+- Adapters automatically attach `server` (when `server-name` / `serverName` is non-empty) and `world`. Plugins or external callers needing custom context keys (region, gamemode, etc.) must pass them explicitly to `StonyPermsBridgeAPI` / `POST /v1/check` / HTTP endpoints.
+- During a world-change refresh, the prior world's snapshot briefly serves until the async fetch returns.
 
-A world change triggers a refetch, so world-scoped nodes work. During the
-in-flight window the old snapshot is served; keep context-sensitive grants
-idempotent or accept a short delay.
+## Expiry boundaries & SSE propagation
 
-## Expiry boundaries
+- SSE (`GET /v1/events`) pushes changes immediately when connected, dropping events only if a single slow subscriber fills its 64-event proxy buffer. Periodic polling (`refresh-seconds = 30`) with `If-None-Match` (`304 Not Modified`) heals any missed frame.
+- Proxy `expiry_cleanup` ticks once per minute; the Java `PermissionResolver` also checks `expiry` locally at evaluation time so expired nodes stop granting immediately even before the next refresh tick.
 
-The proxy filters expired nodes at snapshot time and cleans them on a
-one-minute ticker. A snapshot can contain a node that expires seconds later;
-the client also filters by `expiry`, so checks are correct, but a cached
-snapshot's `nodes` list may include a just-expired entry until refresh. The
-resolver checks expiry on every evaluation.
+## Prefix, suffix, and metadata formatting
 
-## Prefix/suffix/meta
-
-- Values are passed through verbatim, including legacy `&` color codes. The
-  bridge does not translate them to Adventure components.
-- Paper does not use prefix/suffix for chat by itself; another chat plugin must
-  consume them.
-- Metadata is a flat string map. There is no typed metadata.
-
-## No write path
-
-`/spb` cannot grant, deny, promote, or create groups. All mutations remain
-`/sp` on the proxy. This keeps one writer and one audit log.
-
-## One proxy, one token
-
-v1 supports a single shared token and no key rotation overlap. Multi-proxy
-deployments need one API per proxy or a future multi-token version.
+- Values pass through verbatim (`&` codes, MiniMessage tags, etc.) without format translation.
+- Metadata is a flat `Map<String, String>`. Vault `Chat` number/boolean `InfoNode` queries parse cleanly from strings and write string values, with `DEFAULT_VAULT_AFFIX_PRIORITY = 100` for Vault prefix/suffix writes.
 
 ## Ops and break-glass
 
-With `apply-to-ops: true` (default), Paper ops also receive the StonyPerms
-attachment; unmanaged nodes still fall back to vanilla op defaults. With
-`apply-to-ops: false`, the bridge skips ops entirely, so they remain vanilla;
-this does not make StonyPerms deny them. Console/vanilla-op break-glass remains
-available in both modes.
-
-Fabric `/spb` is always available to console and vanilla ops for the same
-reason.
-
-## No live rollout in this change
-
-The repository, builds, and tests are staged. No Gate, Paper, or Fabric live
-server was modified. Promotion and rollback are documented in
-[`rollout.md`](rollout.md).
+- `apply-to-ops: true` (default) applies StonyPerms permissions to operators on both Paper and Fabric. Setting `apply-to-ops: false` skips ops (`Paper` skips attachment application; `Fabric` `isOpBypassed` yields `TriState.DEFAULT`), leaving them vanilla without denying them.
+- Fabric console and `ops.json` ops retain break-glass `/spb` access in both modes.

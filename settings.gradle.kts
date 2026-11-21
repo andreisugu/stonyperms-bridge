@@ -10,6 +10,8 @@ dependencyResolutionManagement {
         mavenCentral()
         maven("https://repo.papermc.io/repository/maven-public/")
         maven("https://maven.fabricmc.net/")
+        maven("https://repo.extendedclip.com/releases/")
+        maven("https://jitpack.io")
     }
 }
 

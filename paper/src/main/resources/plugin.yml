@@ -1,16 +1,19 @@
 name: StonyPermsBridge
-version: '0.1.0'
+version: '${version}'
 main: dev.stonyperms.bridge.paper.StonyPermsBridgePlugin
 api-version: '26.3'
-description: Applies StonyPerms (Gate) permissions to Paper via the read-only HTTP API.
+description: Applies StonyPerms (Gate) permissions and optional cross-server writes to Paper via the HTTP API.
 author: andreisugu
 website: https://github.com/andreisugu/stonyperms-bridge
+softdepend: [Vault, PlaceholderAPI]
 commands:
   spb:
     description: StonyPerms bridge administration
-    usage: /spb <status|refresh|check|reload>
-    permission: stonyperms.bridge.admin
+    usage: /spb <status|refresh|check|reload|user|group|track|log>
 permissions:
   stonyperms.bridge.admin:
-    description: Manage the StonyPerms bridge
+    description: Inspect status, snapshots, and reload the StonyPerms bridge
+    default: op
+  stonyperms.bridge.write:
+    description: Mutate StonyPerms users, groups, and tracks via /spb
     default: op

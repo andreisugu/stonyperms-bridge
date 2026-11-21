@@ -1,168 +1,89 @@
-# Architecture
+# Architecture (v0.2)
 
 ## Goal
 
-Make StonyPerms on Gate the single source of truth for Paper/Fabric server-side
-permissions without moving StonyPerms' data or duplicating its write path.
+Make StonyPerms on Gate the single source of truth for Paper and Fabric server-side permissions while supporting near-real-time invalidation (`GET /v1/events`), plugin/mod developer integrations (`StonyPermsBridgeAPI`, PlaceholderAPI, Vault), and opt-in cross-server administration from trusted backends without moving StonyPerms' storage or duplicating its evaluation engine.
 
-## Options considered
+## Design choice (Proxy-Owned Engine + Scoped HTTP/SSE API)
 
-### A. Read-only HTTP JSON API (chosen)
+StonyPerms on Gate retains exclusive ownership of storage (`atomic JSON`), inheritance, weights, wildcards, contexts, expiry, affixes, metadata, and the audit log. Backends talk to Gate's `api.Server` over HTTP/SSE rather than reading storage files or sharing SQLite/Postgres:
 
-StonyPerms keeps ownership of users, groups, weights, inheritance, wildcards,
-contexts, expiry, metadata, and audit state. Backends ask for a **resolved
-snapshot** and cache it.
-
-Strengths:
-
-- One implementation of evaluation semantics; the bug surface stays on the
-  proxy.
-- No shared filesystem/database coupling; backends can run on other hosts.
-- Language-agnostic, easy to test, easy to put behind TLS/tailnet.
-- Read-only contract cannot corrupt permissions.
-- Change detection is cheap (monotonic revision + ETag).
-
-Costs:
-
-- A network dependency, mitigated by caching and a stale window.
-- The API must be operated securely (token, bind address, TLS).
-- Snapshots are context-specific and point-in-time.
-
-### B. Shared SQLite/Postgres (rejected)
-
-- The current storage is atomic JSON with per-user files; exposing it as a
-  database is a new storage engine, not a bridge.
-- Two writers or direct readers bypass Gate's in-memory manager and audit log.
-- SQLite on a network filesystem is unsafe; Postgres adds a service and
-  credentials to both proxy and every backend.
-- StonyPerms' evaluation needs group inheritance, weights, contexts, expiry,
-  prefixes, and meta. A database client would still reimplement the engine.
-- No clean invalidation story without an API anyway.
-
-### C. Plugin messaging (rejected)
-
-- Requires a connected player and a proxy-side channel; login-time checks and
-  offline checks cannot be served.
-- Request/response correlation, payload limits, and per-backend routing add
-  complexity for no benefit over HTTP.
-- Paper plugins and Fabric mods can both speak HTTP without a player.
+- **One evaluation implementation:** `gate-stonyperms` resolves effective snapshots (`EffectiveUser`) and single checks (`EvaluateUser`); the core Java `PermissionResolver` mirrors that precedence order cleanly.
+- **No shared database coupling:** Backends on remote hosts communicate strictly over tailnet/WireGuard or TLS without filesystem locks or DB credentials.
+- **Near-real-time invalidation + self-healing polling:** SSE (`GET /v1/events`) triggers immediate targeted refreshes while `ETag` / `If-None-Match` periodic refreshes recover automatically from transient stream drops.
+- **Opt-in, fail-closed write delegation:** Cross-server mutations go through Gate's HTTP write routes with separate write-tier authentication, `X-StonyPerms-Actor` attribution, and `Idempotency-Key` support, so Gate's in-memory manager and audit log remain the sole writer.
 
 ## Components
 
 ```text
-┌──────────────────────────────┐
-│ Gate + gate-stonyperms       │
-│  Manager ── Engine           │
-│      │                       │
-│  api.Server (net/http)       │
-└──────┬───────────────────────┘
-       │ GET /v1/players/{uuid}?server=&world=  (Bearer)
-       │ GET /v1/revision, POST /v1/check
+┌──────────────────────────────────────────────────────────┐
+│ Gate + gate-stonyperms                                   │
+│  Manager ── Engine ── EventBus (ChangeEvent)             │
+│      │                                                   │
+│  api.Server (net/http, Read Tier + Opt-In Write Tier)    │
+└──────┬───────────────────────────────────────────────────┘
+       │  Read:  GET /v1/events (SSE), GET /v1/players/{uuid}, POST /v1/players/batch,
+       │         POST /v1/check, GET /v1/users*, /v1/groups*, /v1/tracks*, /v1/health
+       │  Write: POST/PUT/PATCH/DELETE /v1/users*|/v1/groups*|/v1/tracks*|/v1/reload,
+       │         GET /v1/logs  (Bearer write token, X-StonyPerms-Actor, Idempotency-Key)
        ▼
-┌──────────────────────────────┐
-│ stonyperms-bridge/core       │
-│  StonyPermsClient            │
-│  SnapshotCache (TTL + stale) │
-│  PermissionResolver          │
-│  BridgeService               │
-└──────┬───────────────┬───────┘
-       │               │
-       ▼               ▼
- Paper plugin      Fabric mod
- Attachment        PermissionCheckEvent
- materializer      provider
+┌──────────────────────────────────────────────────────────┐
+│ stonyperms-bridge/core                                   │
+│  StonyPermsClient           (read + write + idempotency) │
+│  StonyPermsEventStream      (GET /v1/events + backoff)   │
+│  SnapshotCache              (TTL + stale + rev guard)    │
+│  PermissionResolver         (exact Engine ordering port) │
+│  BridgeService              (fail-closed / stale policy) │
+│  DefaultStonyPermsBridgeAPI + BridgeCommandHandler       │
+└──────┬───────────────────────────────────────┬───────────┘
+       │                                       │
+       ▼                                       ▼
+ Paper plugin (paper)                     Fabric mod (fabric)
+  ├─ Attachment materializer               ├─ fabric-permissions-api listeners
+  ├─ PlaceholderAPI (%stonyperms_*%)       ├─ FabricBridgeRuntime (SSE + refresh)
+  ├─ Vault Permission & Chat (softdepend)  ├─ StonyPermsEvents (USER_UPDATED /
+  ├─ Bukkit ServicesManager API + Event    │    CHANGE_RECEIVED)
+  └─ /spb command                          └─ /spb command
 ```
 
-### Proxy side
+### Proxy Side (`gate-stonyperms`)
 
-`api.Server` is embedded in the existing `gate-stonyperms` plugin and starts
-only when `api_enabled = true`. It calls new manager methods:
+`api.Server` starts when `api_enabled = true`. `api_write_enabled` defaults to `false`; if `api_write_enabled = true` and write-token loading fails, Gate disables the write tier instead of falling back to read tokens. Overlapping tokens between read and write tiers are rejected by `api.New`. Per-IP token buckets (`api_rate_limit_*`, `api_write_rate_limit_*`) protect both tiers, and `GET /v1/events` fans out typed `ChangeEvent` records from `manager.EventBus`.
 
-- `EffectiveUser(uuid, contexts, defaultGroup)` — immutable snapshot of
-  resolved groups, nodes (with source and weight), meta, prefix, suffix.
-- `EvaluateUser(uuid, permission, contexts, defaultGroup)` — authoritative
-  single check.
-- `Revision()` — bumped on every user/group mutation.
-- `GroupsSnapshot()` / `GroupSnapshot()` — deep copies for diagnostics.
+### Core (`core`)
 
-Unknown users are resolved synthetically against the default group and are not
-persisted. Gate normally creates users on login, but this avoids a race at
-backend join time.
+- `StonyPermsClient`: JDK `HttpClient`, Gson, read bearer token + optional write bearer token, `connectTimeoutMs` (default 1500 ms) / `requestTimeoutMs` (default 2500 ms), no redirects (`Redirect.NEVER`), `ETag` (`If-None-Match`), `X-StonyPerms-Actor`, `Idempotency-Key`, and `X-Idempotency-Replayed` inspection. Never exposes tokens or response bodies in exception messages.
+- `StonyPermsEventStream`: Daemon SSE client for `GET /v1/events` with no request read timeout on the stream itself and exponential backoff between `reconnectMinMs` (default 1000 ms) and `reconnectMaxMs` (default 30000 ms).
+- `SnapshotCache`: Keyed by `(uuid, contextKey)` with fresh TTL (`ttlSeconds`) and grace window (`staleGraceSeconds`). Enforces monotonic revision ordering (ignores stale revisions) and refreshes freshness cleanly on HTTP `304`.
+- `PermissionResolver`: Exact port of `engine.Evaluate` precedence:
+  1. Direct user nodes (`user: true`) first.
+  2. Inherited groups in snapshot array order (descending weight).
+  3. Within each source, exact keys beat wildcards, and the longest matching wildcard wins.
+- `BridgeService` & `DefaultStonyPermsBridgeAPI`: Fail-closed / stale-grace policy, synchronous cache accessors (`getCachedSnapshot`, `checkCached`, `getPrimaryGroup`, `getGroups`, `inGroup`, `getPrefix`, `getSuffix`, `getMeta`, `getAllMeta`), async authoritative reads (`fetchSnapshot`, `fetchSnapshotsBatch`, `listUsers`, `resolveUser`, `fetchUserRecord`, `fetchAllGroups`, `fetchGroup`, `fetchGroupMembers`, `fetchTracks`, `fetchTrack`, `checkAuthoritative`, `fetchHealth`), reactive listeners (`onUserUpdated`, `onChangeEvent`), and write methods that fail closed before HTTP when `!isWriteEnabled()`.
+- `BridgeCommandHandler`: Shared `/spb` command parser and tab completer across Paper and Fabric, including duration parsing (`DurationParser`: `s`/`m`/`h`/`d`/`w`/`mo`/`y`/`permanent`, capped at 10 years), trailing `key=value` contexts (`ContextParser`), quoted argument normalization, and `withOnlineAutoEnsure` for online targets not yet persisted on Gate.
 
-### Core
+### Paper Adapter (`paper`)
 
-- `StonyPermsClient`: JDK `HttpClient`, Gson, bearer token, timeouts, no
-  redirects, ETag support. Error messages never include response bodies or
-  tokens.
-- `SnapshotCache`: keyed by `(uuid, contextKey)`, stores snapshot + ETag +
-  fetch time. Fresh for `ttlSeconds`, then stale for the configured grace.
-  Older revisions never overwrite newer ones. `touch` handles HTTP 304.
-- `PermissionResolver`: exact port of `engine.Evaluate` ordering:
-  user direct exact → user wildcard (longest) → each group by descending
-  weight, exact then longest wildcard. A high-weight group wildcard therefore
-  beats a low-weight group exact, matching the proxy.
-- `BridgeService`: fail-closed/stale policy, refresh, materialization, and
-  authoritative checks.
+- Materializes registered Bukkit permissions (`PluginManager.getPermissions()`) plus literal nodes from the snapshot into one `PermissionAttachment` per player on the main server thread.
+- When `apply-to-ops: false`, ops are skipped (`applyIfOnline` leaves ops untouched). When `true` (default), ops also receive the attachment.
+- Hooks SSE events (`user_updated` / `user_deleted` invalidate/refresh the online target; `group_updated` / `group_deleted` / `reload` / `expiry_cleanup` refresh all online players), joins, world changes, and periodic polling (`refresh-seconds`).
+- Registers `StonyPermsBridgeAPI` in Bukkit `ServicesManager`, emits synchronous `StonyPermsUserUpdateEvent` on applied snapshot changes, and registers `PlaceholderAPI` (`%stonyperms_*%`) and `Vault` (`Permission` & `Chat`) only when `integrations.*` is `true` and the optional plugin is enabled (`softdepend: [Vault, PlaceholderAPI]`; neither API jar is shaded).
 
-### Paper adapter
+### Fabric Adapter (`fabric`)
 
-Bukkit's `Permissible.hasPermission` is a map lookup, not a hook, so a plugin
-cannot answer arbitrary future nodes on demand. The adapter:
+- Registers `fabric-permissions-api` listeners: `PermissionCheckEvent`, `OptionRequestEvent`, `OfflinePermissionCheckEvent`, and `OfflineOptionRequestEvent`.
+- `applyToOps` (`true` default): when `false`, `FabricBridgeRuntime.isOpBypassed` returns `true` for server ops so `fabric-permissions-api` defers (`TriState.DEFAULT`) rather than applying StonyPerms grants/denials. Independently, `/spb` retains console and `playerList.isOp(...)` break-glass authorization.
+- Hooks SSE events (`user_updated` / `user_deleted` -> targeted player refresh if online; `group_updated` / `group_deleted` / `reload` / `expiry_cleanup` -> `refreshAll`), `JOIN`, and periodic polling (`refreshSeconds`).
+- Exposes `StonyPermsBridgeMod.api()` and fires `StonyPermsEvents.USER_UPDATED` (on the server thread when available) and `StonyPermsEvents.CHANGE_RECEIVED`.
 
-1. Collects the registered Bukkit permission universe
-   (`PluginManager.getPermissions()`, which includes plugin.yml declarations).
-2. Adds every literal node from the snapshot.
-3. Resolves that universe through `PermissionResolver`.
-4. Applies the resulting concrete map with one `PermissionAttachment` per
-   player, removing the previous attachment first.
-
-Refresh triggers: join, world change, interval, `/spb refresh`, `/spb reload`.
-Values are applied on the main thread. Network I/O runs on a two-thread daemon
-executor.
-
-### Fabric adapter
-
-`fabric-permissions-api` is the official extension point. The mod registers:
-
-- `PermissionCheckEvent` — on-demand check, including wildcards and contexts,
-  from the cache (no network on the server thread).
-- `OptionRequestEvent` — prefix, suffix, and metadata.
-- `OfflinePermissionCheckEvent` / `OfflineOptionRequestEvent` — last known
-  snapshot for that UUID.
-- `ServerPlayConnectionEvents.JOIN` — refresh snapshot.
-- A scheduler that refreshes online players every `refresh-seconds`.
-
-The cache is keyed by the same `(uuid, server, world)` context the mod sends to
-the proxy, so permission checks on the server thread are a hash lookup plus the
-in-memory resolver.
-
-## Refresh and invalidation
-
-- Every mutation on Gate bumps `revision` (users, groups, promote/demote).
-- `/v1/revision` is a cheap poll; clients may poll it every N seconds.
-- Snapshots carry `ETag: "sp-<revision>"`; a client refresh with
-  `If-None-Match` gets `304` and only extends the fresh window.
-- The adapters also refresh on join/world change and on a timer, so a missed
-  revision poll is self-healing.
-- Cache keys include context; a world change fetches a new snapshot instead of
-  reusing the old one.
-
-## Failure modes
+## Refresh, Invalidation & Failure Modes
 
 | Condition | Behavior |
 | --- | --- |
-| API down, no cache, `fail-closed=true` | deny bridge-managed permissions |
-| API down, no cache, `fail-closed=false` | platform defaults |
-| API down, cache within stale grace | serve cached snapshot |
-| API down, cache beyond stale grace | deny / platform defaults per flag |
-| Snapshot present, node undefined | platform default (StonyPerms has no opinion) |
-| Malformed response / 401 / 500 | treat as API failure, keep last good snapshot until grace expires |
-| Token file missing on startup | adapter logs a clear error and disables itself |
-| Paper unknown undeclared node | not materialized; see limitations |
-
-## Why no write path
-
-Writes stay on the Gate command surface. A backend write API would need
-optimistic concurrency, audit attribution, permission checks on the backend,
-and a story for group renames and cache invalidation. That is a separate
-product decision, not required for read-side parity.
+| Mutation on Gate while SSE connected | Proxy emits typed `ChangeEvent` -> backend triggers targeted or full refresh within milliseconds |
+| SSE disconnected or event dropped | Exponential backoff reconnect + periodic `refresh-seconds` poll with `If-None-Match` (`304 Not Modified` extends TTL) |
+| API down, no cache, `fail-closed=true` | Deny bridge-managed permissions (`Tri.FALSE` / empty attachment); platform defaults for unmanaged nodes |
+| API down, cache within `stale-grace-seconds` | Serve cached snapshot when `use-stale-on-error=true` |
+| API down, cache past `stale-grace-seconds` | Deny if `fail-closed=true`, else fall back to platform defaults |
+| `write.enabled=false` or missing write token | Write API methods and mutating `/spb` subcommands fail closed without issuing HTTP writes |
+| Missing read token on startup | Adapter logs a clear error and disables itself cleanly without crashing the server |
