@@ -165,14 +165,18 @@ public final class StonyPermsBridgeMod implements ModInitializer {
                     srv = current.server();
                 }
                 ServerPlayer player = srv == null ? null : srv.getPlayerList().getPlayer(context.uuid());
-                if (player == null || current.isOpBypassed(srv, player)) {
+                if (player != null && current.isOpBypassed(srv, player)) {
                     return null;
                 }
                 String raw = node.key().getNamespace() + "." + node.key().getPath();
                 String normalized = node.key().getNamespace() + "." + node.key().getPath().replace('_', '.');
-                Decision decision = current.resolve(player, normalized);
+                Decision decision = player != null
+                        ? current.resolve(player, normalized)
+                        : current.resolveOffline(context.uuid(), normalized);
                 if (!decision.defined() && !raw.equals(normalized)) {
-                    decision = current.resolve(player, raw);
+                    decision = player != null
+                            ? current.resolve(player, raw)
+                            : current.resolveOffline(context.uuid(), raw);
                 }
                 if (!decision.defined()) {
                     return null;
