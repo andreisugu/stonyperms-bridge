@@ -9,6 +9,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -132,5 +133,36 @@ class PaperBridgeConfigTest {
         PaperBridgeConfig envOverrides = PaperBridgeConfig.from(
                 validFileWrite, dataFolder, null, "env-write-token-0123456789");
         assertEquals("env-write-token-0123456789", envOverrides.writeToken());
+    }
+
+    @Test
+    void parsesStandaloneModeWithoutApiOrTokens() throws Exception {
+        YamlConfiguration config = new YamlConfiguration();
+        config.set("mode", "standalone");
+        config.set("standalone.storage-dir", "local-data");
+        config.set("standalone.primary-group-calculation", "parents-by-weight");
+        config.set("standalone.stack.prefix.enabled", true);
+        config.set("standalone.stack.prefix.mid-spacer", "|");
+
+        PaperBridgeConfig parsed = PaperBridgeConfig.from(config, dataFolder, null, null);
+
+        assertTrue(parsed.isStandalone());
+        assertEquals(PaperBridgeConfig.Mode.STANDALONE, parsed.mode());
+        assertNull(parsed.apiUrl());
+        assertTrue(parsed.writeEnabled());
+        assertFalse(parsed.sseEnabled());
+        assertFalse(parsed.isRemotePlainHttp());
+        assertEquals(dataFolder.resolve("local-data"), parsed.standalone().storageDir());
+        assertEquals("parents-by-weight", parsed.standalone().primaryGroupCalculation());
+        assertTrue(parsed.standalone().stackConfig().prefixEnabled());
+        assertEquals("|", parsed.standalone().stackConfig().prefixMidSpacer());
+    }
+
+    @Test
+    void rejectsInvalidMode() {
+        YamlConfiguration invalid = new YamlConfiguration();
+        invalid.set("mode", "invalid");
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(invalid, dataFolder, null, null));
     }
 }

@@ -17,4 +17,12 @@ public record PriorityMeta(
     public boolean permanent() {
         return expiry <= 0;
     }
+
+    public boolean isExpired(long nowEpochSeconds) {
+        return expiry > 0 && nowEpochSeconds >= expiry;
+    }
+
+    public boolean matchesContext(Map<String, String> query) {
+        return MetaEntry.matchesContextMap(contexts, query);
+    }
 }

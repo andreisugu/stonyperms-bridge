@@ -1,0 +1,181 @@
+{
+  "portableApply": {
+    "expectedGroup": "builder",
+    "expectedGroupWeight": 30,
+    "expectedGroupsCount": 5,
+    "expectedTrack": "ranks",
+    "expectedTrackGroups": [
+      "default",
+      "builder",
+      "vip",
+      "staff"
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "global",
+      "contexts": {},
+      "primaryGroup": "vip",
+      "groups": [
+        "vip",
+        "default"
+      ],
+      "prefix": "\u0026a[VIP] ",
+      "suffix": " \u0026a+",
+      "meta": {
+        "homes": "3",
+        "temp_badge": "star",
+        "tier": "gold"
+      },
+      "checks": [
+        {
+          "permission": "essentials.fly",
+          "result": "false",
+          "source": "user:direct"
+        },
+        {
+          "permission": "homes.2",
+          "result": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "homes.9",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "kit.vip",
+          "result": "true",
+          "source": "group:vip:wildcard (r=kit\\.(starter|vip))"
+        },
+        {
+          "permission": "arena.enter",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "stale.perm",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "gate.command.server",
+          "result": "true",
+          "source": "group:default"
+        }
+      ]
+    },
+    {
+      "name": "smp_creative",
+      "contexts": {
+        "server": "creative"
+      },
+      "primaryGroup": "vip",
+      "groups": [
+        "vip",
+        "default"
+      ],
+      "prefix": "\u0026a[VIP] ",
+      "suffix": " \u0026a+",
+      "meta": {
+        "homes": "10",
+        "temp_badge": "star",
+        "tier": "gold"
+      },
+      "checks": [
+        {
+          "permission": "essentials.fly",
+          "result": "true",
+          "source": "user:direct"
+        },
+        {
+          "permission": "homes.2",
+          "result": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "homes.9",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "kit.vip",
+          "result": "true",
+          "source": "group:vip:wildcard (r=kit\\.(starter|vip))"
+        },
+        {
+          "permission": "arena.enter",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "stale.perm",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "gate.command.server",
+          "result": "true",
+          "source": "group:default"
+        }
+      ]
+    },
+    {
+      "name": "smp_arena",
+      "contexts": {
+        "server": "smp"
+      },
+      "primaryGroup": "vip",
+      "groups": [
+        "vip",
+        "default"
+      ],
+      "prefix": "\u0026a[VIP] ",
+      "suffix": " \u0026a+",
+      "meta": {
+        "homes": "3",
+        "temp_badge": "star",
+        "tier": "gold"
+      },
+      "checks": [
+        {
+          "permission": "essentials.fly",
+          "result": "false",
+          "source": "user:direct"
+        },
+        {
+          "permission": "homes.2",
+          "result": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "homes.9",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "kit.vip",
+          "result": "true",
+          "source": "group:vip:wildcard (r=kit\\.(starter|vip))"
+        },
+        {
+          "permission": "arena.enter",
+          "result": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "stale.perm",
+          "result": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "gate.command.server",
+          "result": "true",
+          "source": "group:default"
+        }
+      ]
+    }
+  ],
+  "userUuid": "550e8400-e29b-41d4-a716-446655440000",
+  "username": "InterOper"
+}

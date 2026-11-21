@@ -1,0 +1,150 @@
+{
+  "admin": {
+    "name": "admin",
+    "displayName": "\u0026cAdmin",
+    "weight": 100,
+    "parents": [
+      {
+        "group": "default"
+      }
+    ],
+    "nodes": [
+      {
+        "key": "*",
+        "value": true
+      },
+      {
+        "key": "stonyperms.*",
+        "value": true
+      }
+    ],
+    "prefixes": [
+      {
+        "priority": 100,
+        "value": "\u0026c[Admin] "
+      }
+    ]
+  },
+  "default": {
+    "name": "default",
+    "displayName": "\u00267Member",
+    "weight": 0,
+    "nodes": [
+      {
+        "key": "gate.command.server",
+        "value": true
+      },
+      {
+        "key": "gate.command.glist",
+        "value": true
+      },
+      {
+        "key": "gate.command.ping",
+        "value": true
+      }
+    ],
+    "prefixes": [
+      {
+        "priority": 10,
+        "value": "\u00267[Member] "
+      }
+    ]
+  },
+  "staff": {
+    "name": "staff",
+    "displayName": "\u00269Staff",
+    "weight": 80,
+    "parents": [
+      {
+        "group": "vip"
+      }
+    ],
+    "nodes": [
+      {
+        "key": "staff.chat",
+        "value": true
+      }
+    ],
+    "prefixes": [
+      {
+        "priority": 80,
+        "value": "\u00269[Staff] "
+      },
+      {
+        "priority": 80,
+        "value": "\u0026b[LobbyStaff] ",
+        "contexts": {
+          "server": "lobby"
+        }
+      }
+    ]
+  },
+  "vip": {
+    "name": "vip",
+    "displayName": "\u0026aVIP",
+    "weight": 50,
+    "parents": [
+      {
+        "group": "default"
+      }
+    ],
+    "nodes": [
+      {
+        "key": "essentials.fly",
+        "value": true
+      },
+      {
+        "key": "homes.{1-3}",
+        "value": true
+      },
+      {
+        "key": "r=kit\\.(starter|vip)",
+        "value": true
+      },
+      {
+        "key": "arena.enter",
+        "value": true,
+        "expiry": 2000000000,
+        "contexts": {
+          "server": "smp"
+        }
+      },
+      {
+        "key": "stale.perm",
+        "value": true,
+        "expiry": 1000000000
+      }
+    ],
+    "meta": {
+      "homes": "3"
+    },
+    "metaEntries": [
+      {
+        "key": "homes",
+        "value": "10",
+        "priority": 20,
+        "contexts": {
+          "server": "creative"
+        }
+      },
+      {
+        "key": "temp_badge",
+        "value": "star",
+        "priority": 5,
+        "expiry": 2000000000
+      }
+    ],
+    "prefixes": [
+      {
+        "priority": 50,
+        "value": "\u0026a[VIP] "
+      }
+    ],
+    "suffixes": [
+      {
+        "priority": 50,
+        "value": " \u0026a+"
+      }
+    ]
+  }
+}

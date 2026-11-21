@@ -1,0 +1,10 @@
+{
+  "ranks": {
+    "name": "ranks",
+    "groups": [
+      "default",
+      "vip",
+      "staff"
+    ]
+  }
+}

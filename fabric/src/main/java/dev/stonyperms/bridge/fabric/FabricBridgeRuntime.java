@@ -11,15 +11,19 @@ import dev.stonyperms.bridge.core.PermissionResolver;
 import dev.stonyperms.bridge.core.RefreshGate;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
+import dev.stonyperms.bridge.core.StonyPermsBackend;
 import dev.stonyperms.bridge.core.StonyPermsClient;
 import dev.stonyperms.bridge.core.StonyPermsEventStream;
+import dev.stonyperms.bridge.core.local.LocalStonyPermsBackend;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.players.NameAndId;
 import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,7 +41,8 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     private final FabricBridgeConfig config;
     private final Logger logger;
-    private final StonyPermsClient client;
+    private final StonyPermsBackend backend;
+    private final LocalStonyPermsBackend localBackend;
     private final SnapshotCache cache;
     private final BridgeService service;
     private final DefaultStonyPermsBridgeAPI api;
@@ -55,15 +60,31 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     public FabricBridgeRuntime(FabricBridgeConfig config, Logger logger) {
         this.config = config;
         this.logger = logger;
-        this.client = new StonyPermsClient(
-                config.apiUrl(),
-                config.token(),
-                config.writeToken(),
-                Duration.ofMillis(config.connectTimeoutMs()),
-                Duration.ofMillis(config.requestTimeoutMs()));
+        if (config.isStandalone()) {
+            try {
+                this.localBackend = LocalStonyPermsBackend.create(config.standalone(), this::handleSseEvent);
+            } catch (IOException error) {
+                throw new IllegalStateException(
+                        "Failed to initialize standalone StonyPerms storage: " + error.getMessage(), error);
+            }
+            this.backend = this.localBackend;
+        } else {
+            this.localBackend = null;
+            this.backend = new StonyPermsClient(
+                    config.apiUrl(),
+                    config.token(),
+                    config.writeToken(),
+                    Duration.ofMillis(config.connectTimeoutMs()),
+                    Duration.ofMillis(config.requestTimeoutMs()));
+        }
         this.cache = new SnapshotCache(config.staleGraceSeconds() * 1000L);
         this.service = new BridgeService(
-                client, cache, new PermissionResolver(), config.failClosed(), config.useStaleOnError());
+                backend, cache, new PermissionResolver(), config.failClosed(), config.useStaleOnError());
+        if (this.localBackend != null) {
+            LocalStonyPermsBackend capture = this.localBackend;
+            this.service.setVerboseObserver((uuid, perm, dec) ->
+                    capture.recordResolvedCheck(uuid, perm, dec.value().name().toLowerCase(Locale.ROOT), dec.source()));
+        }
         this.io = Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "stonyperms-bridge-http");
             thread.setDaemon(true);
@@ -81,7 +102,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         });
         this.api = new DefaultStonyPermsBridgeAPI(
                 service,
-                client,
+                backend,
                 io,
                 config.writeEnabled(),
                 config.effectiveDefaultActor(),
@@ -110,7 +131,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     public void start(MinecraftServer server) {
         this.server = server;
-        if (config.sseEnabled()) {
+        if (!config.isStandalone() && config.sseEnabled()) {
             StonyPermsEventStream stream = new StonyPermsEventStream(
                     config.apiUrl(),
                     config.token(),
@@ -181,6 +202,28 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             return;
         }
         srv.execute(() -> refreshAll(srv));
+    }
+
+    public void ensureAndRefreshSync(ServerPlayer player) {
+        if (player == null || closed.get()) {
+            return;
+        }
+        UUID id = player.getUUID();
+        Map<String, String> contexts = contexts(player);
+        try {
+            if (localBackend != null) {
+                localBackend.ensureOnlineUser(id, player.getName().getString(), config.effectiveDefaultActor());
+            }
+            service.refresh(id, contexts);
+            SnapshotCache.Lookup lookup = service.lookup(id, contexts);
+            if (lookup.present()) {
+                recordSnapshotUpdate(id, lookup.snapshot(), contexts);
+            }
+            lastError = "";
+        } catch (Exception error) {
+            lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
+            noteFailure();
+        }
     }
 
     public void refreshAsync(ServerPlayer player) {
@@ -313,15 +356,31 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     }
 
     public Decision resolveOffline(UUID uuid, String permission) {
-        LastSnapshot last = lastSnapshots.get(uuid);
-        Map<String, String> contexts = last == null ? Map.of() : last.contexts();
+        Map<String, String> contexts = ensureOfflineContextsAndRefresh(uuid);
         return service.resolve(uuid, contexts, permission);
     }
 
     public Optional<String> optionOffline(UUID uuid, String key) {
-        LastSnapshot last = lastSnapshots.get(uuid);
-        Map<String, String> contexts = last == null ? Map.of() : last.contexts();
+        Map<String, String> contexts = ensureOfflineContextsAndRefresh(uuid);
         return service.option(uuid, contexts, key);
+    }
+
+    private Map<String, String> ensureOfflineContextsAndRefresh(UUID uuid) {
+        LastSnapshot last = lastSnapshots.get(uuid);
+        Map<String, String> contexts = last == null
+                ? (config.isStandalone() ? defaultContexts() : Map.of())
+                : last.contexts();
+        if (config.isStandalone() && localBackend != null && uuid != null) {
+            SnapshotCache.Lookup lookup = service.lookup(uuid, contexts);
+            if (!lookup.present()) {
+                try {
+                    service.refresh(uuid, contexts);
+                } catch (Exception error) {
+                    lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
+                }
+            }
+        }
+        return contexts;
     }
 
     public CompletableFuture<CheckResult> authoritativeCheck(ServerPlayer player, String permission) {
@@ -338,6 +397,20 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     public String status() {
         String error = lastError.isEmpty() ? "none" : lastError;
+        if (config.isStandalone() && localBackend != null) {
+            var mgr = localBackend.manager();
+            return "StonyPerms standalone: storage=" + config.standalone().storageDir()
+                    + ", revision=" + mgr.revision()
+                    + ", users=" + mgr.usersCount()
+                    + ", groups=" + mgr.groupsCount()
+                    + ", tracks=" + mgr.tracksCount()
+                    + ", server=" + (config.serverName().isEmpty() ? "(none)" : config.serverName())
+                    + ", cached=" + cache.size()
+                    + ", failClosed=" + config.failClosed()
+                    + ", applyToOps=" + config.applyToOps()
+                    + ", write=" + (api.isWriteEnabled() ? "enabled" : "disabled")
+                    + ", lastError=" + error;
+        }
         String sseState;
         StonyPermsEventStream stream = eventStream;
         if (!config.sseEnabled() || stream == null) {
@@ -394,7 +467,10 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         scheduler.shutdownNow();
         io.shutdownNow();
         checks.shutdownNow();
-        client.close();
+        try {
+            backend.close();
+        } catch (Exception ignored) {
+        }
     }
 
     private record LastSnapshot(Snapshot snapshot, Map<String, String> contexts) {

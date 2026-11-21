@@ -1,0 +1,16 @@
+[
+  {
+    "timestamp": 1795297036,
+    "actor": "System",
+    "targetType": "general",
+    "target": "system",
+    "action": "Initialized StonyPerms storage"
+  },
+  {
+    "timestamp": 1795297036,
+    "actor": "SpecGen",
+    "targetType": "track",
+    "target": "ranks",
+    "action": "Updated track groups (3)"
+  }
+]

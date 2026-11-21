@@ -8,6 +8,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -115,6 +116,45 @@ class FabricBridgeConfigTest {
 
     @Test
     void missingTokenIsRejected() {
+        assertThrows(FabricBridgeConfig.ConfigException.class,
+                () -> FabricBridgeConfig.load(configDir, null));
+    }
+
+    @Test
+    void parsesStandaloneModeWithoutApiOrTokensAndSupportsPeek() throws Exception {
+        assertFalse(FabricBridgeConfig.peekIsStandalone(configDir));
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {
+                  "mode": "standalone",
+                  "standalone": {
+                    "storageDir": "local-sp-data",
+                    "primaryGroupCalculation": "all-parents-by-weight",
+                    "stack": {
+                      "prefixEnabled": true,
+                      "prefixMidSpacer": "|"
+                    }
+                  }
+                }
+                """);
+        assertTrue(FabricBridgeConfig.peekIsStandalone(configDir));
+        FabricBridgeConfig config = FabricBridgeConfig.load(configDir, null, null);
+        assertTrue(config.isStandalone());
+        assertEquals(FabricBridgeConfig.Mode.STANDALONE, config.mode());
+        assertNull(config.apiUrl());
+        assertTrue(config.writeEnabled());
+        assertFalse(config.sseEnabled());
+        assertFalse(config.isRemotePlainHttp());
+        assertEquals(configDir.resolve("local-sp-data"), config.standalone().storageDir());
+        assertEquals("all-parents-by-weight", config.standalone().primaryGroupCalculation());
+        assertTrue(config.standalone().stackConfig().prefixEnabled());
+        assertEquals("|", config.standalone().stackConfig().prefixMidSpacer());
+    }
+
+    @Test
+    void rejectsInvalidMode() throws Exception {
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {"mode": "bogus"}
+                """);
         assertThrows(FabricBridgeConfig.ConfigException.class,
                 () -> FabricBridgeConfig.load(configDir, null));
     }

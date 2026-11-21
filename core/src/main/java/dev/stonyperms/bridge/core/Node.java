@@ -1,15 +1,18 @@
 package dev.stonyperms.bridge.core;
 
+import com.google.re2j.Pattern;
+import com.google.re2j.PatternSyntaxException;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * One resolved permission node. Source ordering is carried by the snapshot:
+ * One resolved or stored permission node. Source ordering is carried by the snapshot:
  * user nodes come first, then groups in descending weight order.
  */
 public record Node(
@@ -22,12 +25,29 @@ public record Node(
         boolean user) {
 
     public static final int MAX_SHORTHAND_EXPANSIONS = 128;
+    public static final int MAX_COMPILED_REGEX_CACHE = 1024;
+
+    private static final ConcurrentHashMap<String, Pattern> REGEX_CACHE = new ConcurrentHashMap<>();
+    private static final AtomicInteger REGEX_CACHE_COUNT = new AtomicInteger();
 
     public record MatchResult(boolean matched, boolean exact, int specificityScore) {
     }
 
+    public Node(String key, boolean value, long expiry, Map<String, String> contexts) {
+        this(key, value, contexts, expiry, "unknown", 0, false);
+    }
+
     public Node {
-        key = key == null ? "" : key.toLowerCase(Locale.ROOT).trim();
+        if (key == null) {
+            key = "";
+        } else {
+            String trimmed = key.trim();
+            if (trimmed.regionMatches(true, 0, "r=", 0, 2)) {
+                key = "r=" + trimmed.substring(2).trim();
+            } else {
+                key = trimmed.toLowerCase(Locale.ROOT);
+            }
+        }
         contexts = contexts == null || contexts.isEmpty() ? Map.of() : Map.copyOf(contexts);
         source = source == null ? "unknown" : source;
     }
@@ -38,19 +58,27 @@ public record Node(
 
     /** Mirrors model.Node.MatchesContext in gate-stonyperms. */
     public boolean matchesContext(Map<String, String> query) {
-        if (contexts.isEmpty()) {
-            return true;
+        return MetaEntry.matchesContextMap(contexts, query);
+    }
+
+    private static Pattern compileNodeRegex(String pat) {
+        Pattern cached = REGEX_CACHE.get(pat);
+        if (cached != null) {
+            return cached;
         }
-        if (query == null || query.isEmpty()) {
-            return false;
+        Pattern compiled;
+        try {
+            compiled = Pattern.compile("(?i)^(?:" + pat + ")$");
+        } catch (PatternSyntaxException ignored) {
+            return null;
         }
-        for (Map.Entry<String, String> entry : contexts.entrySet()) {
-            String actual = query.get(entry.getKey());
-            if (actual == null || !actual.equalsIgnoreCase(entry.getValue())) {
-                return false;
+        if (REGEX_CACHE_COUNT.incrementAndGet() <= MAX_COMPILED_REGEX_CACHE) {
+            Pattern prev = REGEX_CACHE.putIfAbsent(pat, compiled);
+            if (prev != null) {
+                return prev;
             }
         }
-        return true;
+        return compiled;
     }
 
     /** Mirrors model.ExpandShorthand in gate-stonyperms. */
@@ -58,14 +86,15 @@ public record Node(
         if (pattern == null) {
             return List.of();
         }
-        String trimmed = pattern.trim().toLowerCase(Locale.ROOT);
+        String trimmed = pattern.trim();
         if (trimmed.isEmpty()) {
             return List.of();
         }
-        if (trimmed.startsWith("r=")) {
+        String lower = trimmed.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("r=")) {
             return List.of(trimmed);
         }
-        List<String> cur = List.of(trimmed);
+        List<String> cur = List.of(lower);
         for (int step = 0; step < 8; step++) {
             boolean changed = false;
             List<String> next = new ArrayList<>();
@@ -146,14 +175,27 @@ public record Node(
                 }
             }
         }
-        String[] parts = inner.split(Pattern.quote(String.valueOf(sep)), -1);
-        if (parts.length <= 1) {
+        List<String> rawParts = splitChar(inner, sep);
+        if (rawParts.size() <= 1) {
             return List.of();
         }
-        List<String> out = new ArrayList<>(parts.length);
-        for (String part : parts) {
+        List<String> out = new ArrayList<>(rawParts.size());
+        for (String part : rawParts) {
             out.add(part.trim());
         }
+        return out;
+    }
+
+    private static List<String> splitChar(String s, char sep) {
+        List<String> out = new ArrayList<>();
+        int start = 0;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) == sep) {
+                out.add(s.substring(start, i));
+                start = i + 1;
+            }
+        }
+        out.add(s.substring(start));
         return out;
     }
 
@@ -166,29 +208,27 @@ public record Node(
         if (t.isEmpty()) {
             return new MatchResult(false, false, 0);
         }
-        if (key.startsWith("r=")) {
+        if (key.regionMatches(true, 0, "r=", 0, 2)) {
             String pat = key.substring(2).trim();
             if (pat.isEmpty()) {
                 return new MatchResult(false, false, 0);
             }
-            try {
-                Pattern compiled = Pattern.compile("^(?:" + pat + ")$", Pattern.CASE_INSENSITIVE);
-                if (compiled.matcher(t).matches()) {
-                    return new MatchResult(true, false, pat.length());
-                }
-            } catch (PatternSyntaxException ignored) {
+            Pattern compiled = compileNodeRegex(pat);
+            if (compiled != null && compiled.matcher(t).matches()) {
+                return new MatchResult(true, false, pat.length());
             }
             return new MatchResult(false, false, 0);
         }
-        if (key.indexOf('{') < 0 && key.indexOf('(') < 0) {
-            if (key.equals(t)) {
+        String lk = key.toLowerCase(Locale.ROOT);
+        if (lk.indexOf('{') < 0 && lk.indexOf('(') < 0) {
+            if (lk.equals(t)) {
                 return new MatchResult(true, true, t.length() + 1);
             }
-            if (key.equals("*")) {
+            if (lk.equals("*")) {
                 return new MatchResult(true, false, 1);
             }
-            if (key.endsWith(".*")) {
-                String prefix = key.substring(0, key.length() - 1);
+            if (lk.endsWith(".*")) {
+                String prefix = lk.substring(0, lk.length() - 1);
                 if (t.startsWith(prefix)) {
                     return new MatchResult(true, false, prefix.length());
                 }
@@ -198,7 +238,7 @@ public record Node(
 
         boolean matched = false;
         int bestScore = 0;
-        for (String cand : expandShorthand(key)) {
+        for (String cand : expandShorthand(lk)) {
             if (cand.equals(t)) {
                 return new MatchResult(true, true, t.length());
             }
@@ -222,11 +262,13 @@ public record Node(
     }
 
     public boolean isWildcard() {
-        return key.equals("*") || key.endsWith(".*");
+        String lk = key.toLowerCase(Locale.ROOT);
+        return lk.equals("*") || lk.endsWith(".*");
     }
 
     public boolean isPattern() {
-        return isWildcard() || key.startsWith("r=") || key.indexOf('{') >= 0 || key.indexOf('(') >= 0;
+        String lk = key.toLowerCase(Locale.ROOT);
+        return isWildcard() || lk.startsWith("r=") || lk.indexOf('{') >= 0 || lk.indexOf('(') >= 0;
     }
 
     public boolean active(long nowEpochSeconds, Map<String, String> query) {

@@ -10,6 +10,7 @@ java {
 
 dependencies {
     api("com.google.code.gson:gson:2.15.0")
+    api("com.google.re2j:re2j:1.8")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")

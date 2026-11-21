@@ -66,14 +66,25 @@ public final class StonyPermsBridgeMod implements ModInitializer {
             FabricBridgeRuntime current = runtime;
             if (current != null) {
                 ServerPlayer player = handler.getPlayer();
-                current.snapshot(player).ifPresentOrElse(
-                        snap -> FabricDisplayManager.apply(server, player, snap, current),
-                        () -> {
-                            if (current.isOpBypassed(server, player) || current.config().failClosed()) {
-                                FabricDisplayManager.clear(server, player.getScoreboardName());
-                            }
-                        });
-                current.refreshAsync(player);
+                if (current.config().isStandalone()) {
+                    current.ensureAndRefreshSync(player);
+                    current.snapshot(player).ifPresentOrElse(
+                            snap -> FabricDisplayManager.apply(server, player, snap, current),
+                            () -> {
+                                if (current.isOpBypassed(server, player) || current.config().failClosed()) {
+                                    FabricDisplayManager.clear(server, player.getScoreboardName());
+                                }
+                            });
+                } else {
+                    current.snapshot(player).ifPresentOrElse(
+                            snap -> FabricDisplayManager.apply(server, player, snap, current),
+                            () -> {
+                                if (current.isOpBypassed(server, player) || current.config().failClosed()) {
+                                    FabricDisplayManager.clear(server, player.getScoreboardName());
+                                }
+                            });
+                    current.refreshAsync(player);
+                }
             }
         });
 
@@ -199,12 +210,20 @@ public final class StonyPermsBridgeMod implements ModInitializer {
             FabricBridgeRuntime fresh = new FabricBridgeRuntime(config, LOGGER);
             runtime = fresh;
             fresh.start(server);
-            LOGGER.info("StonyPerms bridge using {} (server context: {}, write={}, sse={}, applyToOps={})",
-                    config.apiUrl(),
-                    config.serverName().isEmpty() ? "(none)" : config.serverName(),
-                    fresh.api().isWriteEnabled(),
-                    config.sseEnabled(),
-                    config.applyToOps());
+            if (config.isStandalone()) {
+                LOGGER.info("StonyPerms standalone using {} (server context: {}, write={}, applyToOps={})",
+                        config.standalone().storageDir(),
+                        config.serverName().isEmpty() ? "(none)" : config.serverName(),
+                        fresh.api().isWriteEnabled(),
+                        config.applyToOps());
+            } else {
+                LOGGER.info("StonyPerms bridge using {} (server context: {}, write={}, sse={}, applyToOps={})",
+                        config.apiUrl(),
+                        config.serverName().isEmpty() ? "(none)" : config.serverName(),
+                        fresh.api().isWriteEnabled(),
+                        config.sseEnabled(),
+                        config.applyToOps());
+            }
             if (config.isRemotePlainHttp()) {
                 LOGGER.warn("api.url uses plain HTTP to a non-loopback host; prefer TLS or a private network");
             }
@@ -223,31 +242,65 @@ public final class StonyPermsBridgeMod implements ModInitializer {
     }
 
     private static void registerCommands() {
-        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
-                dispatcher.register(Commands.literal("spb")
-                        .requires(source -> hasAdminPermission(source) || hasWritePermission(source))
-                        .then(Commands.literal("status")
-                                .requires(StonyPermsBridgeMod::hasAdminPermission)
-                                .executes(context -> {
-                                    FabricBridgeRuntime current = runtime;
-                                    send(context.getSource(), current == null
-                                            ? "StonyPerms bridge is not running"
-                                            : current.status());
-                                    return 1;
-                                }))
-                        .then(Commands.literal("refresh")
-                                .requires(StonyPermsBridgeMod::hasAdminPermission)
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(buildCommandTree("spb"));
+            if (FabricBridgeConfig.peekIsStandalone(FabricLoader.getInstance().getConfigDir())) {
+                dispatcher.register(buildCommandTree("sp"));
+                dispatcher.register(buildCommandTree("stonyperms"));
+            }
+        });
+    }
+
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> buildCommandTree(
+            String cmdLabel) {
+        return Commands.literal(cmdLabel)
+                .requires(source -> hasAdminPermission(source) || hasWritePermission(source))
+                .then(Commands.literal("status")
+                        .requires(StonyPermsBridgeMod::hasAdminPermission)
+                        .executes(context -> {
+                            FabricBridgeRuntime current = runtime;
+                            send(context.getSource(), current == null
+                                    ? "StonyPerms bridge is not running"
+                                    : current.status());
+                            return 1;
+                        }))
+                .then(Commands.literal("info")
+                        .requires(StonyPermsBridgeMod::hasAdminPermission)
+                        .executes(context -> {
+                            FabricBridgeRuntime current = runtime;
+                            send(context.getSource(), current == null
+                                    ? "StonyPerms bridge is not running"
+                                    : current.status());
+                            return 1;
+                        }))
+                .then(Commands.literal("refresh")
+                        .requires(StonyPermsBridgeMod::hasAdminPermission)
+                        .executes(context -> {
+                            FabricBridgeRuntime current = runtime;
+                            if (current == null) {
+                                send(context.getSource(), "StonyPerms bridge is not running");
+                                return 0;
+                            }
+                            current.refreshAll(context.getSource().getServer());
+                            send(context.getSource(), "Refresh requested for all online players");
+                            return 1;
+                        })
+                        .then(Commands.argument("player", EntityArgument.player())
                                 .executes(context -> {
                                     FabricBridgeRuntime current = runtime;
                                     if (current == null) {
                                         send(context.getSource(), "StonyPerms bridge is not running");
                                         return 0;
                                     }
-                                    current.refreshAll(context.getSource().getServer());
-                                    send(context.getSource(), "Refresh requested for all online players");
+                                    ServerPlayer target = EntityArgument.getPlayer(context, "player");
+                                    current.refreshAsync(target);
+                                    send(context.getSource(), "Refresh requested for " + target.getName().getString());
                                     return 1;
-                                })
-                                .then(Commands.argument("player", EntityArgument.player())
+                                })))
+                .then(Commands.literal("check")
+                        .requires(StonyPermsBridgeMod::hasAdminPermission)
+                        .then(Commands.argument("player", EntityArgument.player())
+                                .then(Commands.argument("permission", StringArgumentType.greedyString())
                                         .executes(context -> {
                                             FabricBridgeRuntime current = runtime;
                                             if (current == null) {
@@ -255,68 +308,58 @@ public final class StonyPermsBridgeMod implements ModInitializer {
                                                 return 0;
                                             }
                                             ServerPlayer target = EntityArgument.getPlayer(context, "player");
-                                            current.refreshAsync(target);
-                                            send(context.getSource(), "Refresh requested for " + target.getName().getString());
+                                            String permission = StringArgumentType.getString(context, "permission");
+                                            current.authoritativeCheck(target, permission).whenComplete((result, error) -> {
+                                                String message = error != null
+                                                        ? "check failed: " + rootCause(error).getClass().getSimpleName()
+                                                        : permission + " = " + result.value() + " (" + result.source() + ")";
+                                                context.getSource().getServer().execute(
+                                                        () -> send(context.getSource(), message));
+                                            });
                                             return 1;
-                                        })))
-                        .then(Commands.literal("check")
-                                .requires(StonyPermsBridgeMod::hasAdminPermission)
-                                .then(Commands.argument("player", EntityArgument.player())
-                                        .then(Commands.argument("permission", StringArgumentType.greedyString())
-                                                .executes(context -> {
-                                                    FabricBridgeRuntime current = runtime;
-                                                    if (current == null) {
-                                                        send(context.getSource(), "StonyPerms bridge is not running");
-                                                        return 0;
-                                                    }
-                                                    ServerPlayer target = EntityArgument.getPlayer(context, "player");
-                                                    String permission = StringArgumentType.getString(context, "permission");
-                                                    current.authoritativeCheck(target, permission).whenComplete((result, error) -> {
-                                                        String message = error != null
-                                                                ? "check failed: " + rootCause(error).getClass().getSimpleName()
-                                                                : permission + " = " + result.value() + " (" + result.source() + ")";
-                                                        context.getSource().getServer().execute(
-                                                                () -> send(context.getSource(), message));
-                                                    });
-                                                    return 1;
-                                                }))))
-                        .then(Commands.literal("reload")
-                                .requires(StonyPermsBridgeMod::hasAdminPermission)
-                                .executes(context -> {
-                                    boolean reloaded = reload(context.getSource().getServer());
-                                    send(context.getSource(), reloaded
-                                            ? "StonyPerms bridge reloaded"
-                                            : "Reload failed; see server log");
-                                    return reloaded ? 1 : 0;
-                                })
-                                .then(Commands.literal("remote")
-                                        .requires(StonyPermsBridgeMod::hasWritePermission)
-                                        .executes(context -> dispatchShared(context, "reload", "remote"))))
-                        .then(sharedSubtree("user", false))
-                        .then(sharedSubtree("group", false))
-                        .then(sharedSubtree("track", false))
-                        .then(sharedSubtree("log", true))
-                        .then(sharedSubtree("editor", true))
-                        .then(sharedSubtree("applyedits", true))
-                        .then(sharedSubtree("tree", true))
-                        .then(sharedSubtree("verbose", true))));
+                                        }))))
+                .then(Commands.literal("reload")
+                        .requires(StonyPermsBridgeMod::hasAdminPermission)
+                        .executes(context -> {
+                            boolean reloaded = reload(context.getSource().getServer());
+                            send(context.getSource(), reloaded
+                                    ? "StonyPerms bridge reloaded"
+                                    : "Reload failed; see server log");
+                            return reloaded ? 1 : 0;
+                        })
+                        .then(Commands.literal("remote")
+                                .requires(StonyPermsBridgeMod::hasWritePermission)
+                                .executes(context -> dispatchShared(context, cmdLabel, "reload", "remote"))))
+                .then(sharedSubtree(cmdLabel, "search", false))
+                .then(sharedSubtree(cmdLabel, "sync", true))
+                .then(sharedSubtree(cmdLabel, "networksync", true))
+                .then(sharedSubtree(cmdLabel, "bulkupdate", true))
+                .then(sharedSubtree(cmdLabel, "user", false))
+                .then(sharedSubtree(cmdLabel, "group", false))
+                .then(sharedSubtree(cmdLabel, "track", false))
+                .then(sharedSubtree(cmdLabel, "log", true))
+                .then(sharedSubtree(cmdLabel, "editor", true))
+                .then(sharedSubtree(cmdLabel, "applyedits", true))
+                .then(sharedSubtree(cmdLabel, "tree", true))
+                .then(sharedSubtree(cmdLabel, "verbose", true));
     }
 
     private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> sharedSubtree(
-            String literal, boolean writeOnly) {
+            String cmdLabel, String literal, boolean writeOnly) {
         var builder = Commands.literal(literal);
         if (writeOnly) {
             builder.requires(StonyPermsBridgeMod::hasWritePermission);
         }
         return builder
-                .executes(context -> dispatchShared(context, literal, ""))
+                .executes(context -> dispatchShared(context, cmdLabel, literal, ""))
                 .then(Commands.argument("args", StringArgumentType.greedyString())
                         .suggests(suggestFor(literal))
                         .executes(context -> dispatchShared(
-                                context, literal, StringArgumentType.getString(context, "args"))));
+                                context, cmdLabel, literal, StringArgumentType.getString(context, "args"))));
     }
 
-    private static int dispatchShared(CommandContext<CommandSourceStack> context, String root, String rawTail) {
+    private static int dispatchShared(
+            CommandContext<CommandSourceStack> context, String cmdLabel, String root, String rawTail) {
         FabricBridgeRuntime current = runtime;
         if (current == null) {
             send(context.getSource(), "StonyPerms bridge is not running");
@@ -325,7 +368,7 @@ public final class StonyPermsBridgeMod implements ModInitializer {
         String[] args = combineRootAndTail(root, rawTail, false);
         BridgeCommandHandler handler = new BridgeCommandHandler(
                 current.api(), new FabricCommandPlatform(context.getSource().getServer(), current));
-        handler.execute(context.getSource(), "spb", args);
+        handler.execute(context.getSource(), cmdLabel, args);
         return 1;
     }
 
@@ -380,7 +423,9 @@ public final class StonyPermsBridgeMod implements ModInitializer {
         if (source.getServer().getPlayerList().isOp(new NameAndId(player.getGameProfile()))) {
             return true;
         }
-        return Permissions.check(source, "stonyperms.bridge.admin", false);
+        return Permissions.check(source, "stonyperms.bridge.admin", false)
+                || Permissions.check(source, "stonyperms.admin", false)
+                || Permissions.check(source, "stonyperms.*", false);
     }
 
     private static boolean hasWritePermission(CommandSourceStack source) {
@@ -391,7 +436,9 @@ public final class StonyPermsBridgeMod implements ModInitializer {
         if (source.getServer().getPlayerList().isOp(new NameAndId(player.getGameProfile()))) {
             return true;
         }
-        return Permissions.check(source, "stonyperms.bridge.write", false);
+        return Permissions.check(source, "stonyperms.bridge.write", false)
+                || Permissions.check(source, "stonyperms.admin", false)
+                || Permissions.check(source, "stonyperms.*", false);
     }
 
     private static boolean reload(MinecraftServer server) {

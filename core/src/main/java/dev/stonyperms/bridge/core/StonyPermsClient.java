@@ -28,7 +28,7 @@ import java.util.concurrent.TimeoutException;
  * HTTP client for the StonyPerms Gate API (read-tier + optional scoped write-tier).
  * Uses only the JDK HttpClient and Gson; no platform classes leak into this module.
  */
-public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
+public final class StonyPermsClient implements StonyPermsBackend {
 
     private static final String USER_AGENT = "stonyperms-bridge/0.2";
 
