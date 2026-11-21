@@ -1,16 +1,18 @@
 # StonyPerms bridge (Paper)
-#
-# The bridge only reads from the StonyPerms HTTP API. It never writes
-# permissions data and never changes users or groups.
 api:
   # StonyPerms Gate API. Prefer loopback; for a remote backend use a private
   # network (tailnet/WireGuard) and HTTPS.
   url: "http://127.0.0.1:8737"
 
-  # Token resolution order: STONYPERMS_BRIDGE_TOKEN env var, api.token, api.token-file.
+  # Read token resolution order: STONYPERMS_BRIDGE_TOKEN env var, api.token, api.token-file.
   # Do not commit a real token.
   token: ""
   token-file: "token"
+
+  # Optional write-tier token (required only when write.enabled is true).
+  # Resolution order: STONYPERMS_BRIDGE_WRITE_TOKEN env var, api.write-token, api.write-token-file.
+  write-token: ""
+  write-token-file: ""
 
   connect-timeout-ms: 1500
   request-timeout-ms: 2500
@@ -35,6 +37,22 @@ use-stale-on-error: true
 
 # Apply attachments to operators too. Set false to leave ops fully vanilla.
 apply-to-ops: true
+
+# Cross-server write integration (fail-closed by default).
+write:
+  enabled: false
+  default-actor: ""
+
+# Live SSE invalidation stream (GET /v1/events).
+sse:
+  enabled: true
+  reconnect-min-ms: 1000
+  reconnect-max-ms: 30000
+
+# Soft-dependency integrations (registered only if the plugin is enabled).
+integrations:
+  placeholderapi: true
+  vault: true
 
 # Verbose refresh failure logging. Tokens are never logged.
 debug: false

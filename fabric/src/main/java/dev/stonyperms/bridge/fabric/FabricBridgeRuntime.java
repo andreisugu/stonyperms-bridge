@@ -1,6 +1,9 @@
 package dev.stonyperms.bridge.fabric;
 
+import dev.stonyperms.bridge.api.DefaultStonyPermsBridgeAPI;
+import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
 import dev.stonyperms.bridge.core.BridgeService;
+import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.CheckResult;
 import dev.stonyperms.bridge.core.Contexts;
 import dev.stonyperms.bridge.core.Decision;
@@ -9,8 +12,11 @@ import dev.stonyperms.bridge.core.RefreshGate;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.StonyPermsClient;
+import dev.stonyperms.bridge.core.StonyPermsEventStream;
+import com.mojang.authlib.GameProfile;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.players.NameAndId;
 import org.slf4j.Logger;
 
 import java.time.Duration;
@@ -23,9 +29,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Owns the HTTP client, snapshot cache, and refresh scheduler for one server. */
+/** Owns the HTTP client, SSE stream, API, snapshot cache, and refresh scheduler for one server. */
 public final class FabricBridgeRuntime implements AutoCloseable {
 
     private final FabricBridgeConfig config;
@@ -33,12 +40,16 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     private final StonyPermsClient client;
     private final SnapshotCache cache;
     private final BridgeService service;
+    private final DefaultStonyPermsBridgeAPI api;
     private final ExecutorService io;
     private final ExecutorService checks;
     private final ScheduledExecutorService scheduler;
     private final RefreshGate refreshGate = new RefreshGate(64);
     private final Map<UUID, LastSnapshot> lastSnapshots = new ConcurrentHashMap<>();
     private final AtomicLong lastFailureLogAt = new AtomicLong();
+    private final AtomicBoolean closed = new AtomicBoolean(false);
+    private volatile MinecraftServer server;
+    private volatile StonyPermsEventStream eventStream;
     private volatile String lastError = "";
 
     public FabricBridgeRuntime(FabricBridgeConfig config, Logger logger) {
@@ -47,12 +58,13 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         this.client = new StonyPermsClient(
                 config.apiUrl(),
                 config.token(),
+                config.writeToken(),
                 Duration.ofMillis(config.connectTimeoutMs()),
                 Duration.ofMillis(config.requestTimeoutMs()));
         this.cache = new SnapshotCache(config.staleGraceSeconds() * 1000L);
         this.service = new BridgeService(
                 client, cache, new PermissionResolver(), config.failClosed(), config.useStaleOnError());
-        this.io = Executors.newFixedThreadPool(2, runnable -> {
+        this.io = Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "stonyperms-bridge-http");
             thread.setDaemon(true);
             return thread;
@@ -67,25 +79,102 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
+        this.api = new DefaultStonyPermsBridgeAPI(
+                service,
+                client,
+                io,
+                config.writeEnabled(),
+                config.effectiveDefaultActor(),
+                this::refreshByUuid,
+                this::refreshServerAll);
+    }
+
+    public StonyPermsBridgeAPI api() {
+        return api;
     }
 
     public void start(MinecraftServer server) {
+        this.server = server;
+        if (config.sseEnabled()) {
+            StonyPermsEventStream stream = new StonyPermsEventStream(
+                    config.apiUrl(),
+                    config.token(),
+                    Duration.ofMillis(config.connectTimeoutMs()),
+                    config.sseReconnectMinMs(),
+                    config.sseReconnectMaxMs(),
+                    this::handleSseEvent);
+            this.eventStream = stream;
+            stream.start();
+        }
         scheduler.scheduleAtFixedRate(
-                () -> server.execute(() -> refreshAll(server)),
+                () -> {
+                    if (server != null && !closed.get()) {
+                        server.execute(() -> refreshAll(server));
+                    }
+                },
                 0,
                 config.refreshSeconds(),
                 TimeUnit.SECONDS);
     }
 
+    public boolean shouldBypassForOp(boolean isOp) {
+        return isOp && !config.applyToOps();
+    }
+
+    public boolean isOpBypassed(MinecraftServer srv, ServerPlayer player) {
+        if (config.applyToOps() || srv == null || player == null) {
+            return false;
+        }
+        return isOpBypassed(srv, player.getGameProfile());
+    }
+
+    public boolean isOpBypassed(MinecraftServer srv, GameProfile profile) {
+        if (config.applyToOps() || srv == null || profile == null) {
+            return false;
+        }
+        return srv.getPlayerList().isOp(new NameAndId(profile));
+    }
+
     public void refreshAll(MinecraftServer server) {
+        if (server == null || closed.get()) {
+            return;
+        }
         for (ServerPlayer player : server.getPlayerList().getPlayers()) {
             refreshAsync(player);
         }
     }
 
+    public void refreshByUuid(UUID uuid) {
+        MinecraftServer srv = this.server;
+        if (uuid == null || srv == null || closed.get()) {
+            return;
+        }
+        srv.execute(() -> {
+            if (closed.get()) {
+                return;
+            }
+            ServerPlayer player = srv.getPlayerList().getPlayer(uuid);
+            if (player != null) {
+                refreshAsync(player);
+            }
+        });
+    }
+
+    public void refreshServerAll() {
+        MinecraftServer srv = this.server;
+        if (srv == null || closed.get()) {
+            return;
+        }
+        srv.execute(() -> refreshAll(srv));
+    }
+
     public void refreshAsync(ServerPlayer player) {
         UUID id = player.getUUID();
         Map<String, String> contexts = contexts(player);
+        refreshAsync(id, contexts);
+    }
+
+    void refreshAsync(UUID id, Map<String, String> contexts) {
         String key = id + "|" + Contexts.key(contexts);
         if (!refreshGate.tryBegin(key)) {
             return;
@@ -96,13 +185,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
                     service.refresh(id, contexts);
                     SnapshotCache.Lookup lookup = service.lookup(id, contexts);
                     if (lookup.present()) {
-                        lastSnapshots.compute(id, (ignored, existing) -> {
-                            Snapshot snapshot = lookup.snapshot();
-                            if (existing != null && existing.snapshot().revision() > snapshot.revision()) {
-                                return existing;
-                            }
-                            return new LastSnapshot(snapshot, contexts);
-                        });
+                        recordSnapshotUpdate(id, lookup.snapshot(), contexts);
                     }
                     lastError = "";
                 } catch (Exception error) {
@@ -116,6 +199,68 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             refreshGate.end(key);
             lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
             noteFailure();
+        }
+    }
+
+    void recordSnapshotUpdate(UUID id, Snapshot snapshot, Map<String, String> contexts) {
+        LastSnapshot previous = lastSnapshots.put(id, new LastSnapshot(snapshot, contexts));
+        if (previous == null
+                || previous.snapshot().revision() != snapshot.revision()
+                || !previous.snapshot().equals(snapshot)) {
+            long prevRev = previous == null ? -1L : previous.snapshot().revision();
+            api.notifyUserUpdated(id, snapshot);
+            MinecraftServer srv = this.server;
+            if (srv != null && !closed.get()) {
+                srv.execute(() -> StonyPermsEvents.USER_UPDATED.invoker().onUserUpdated(id, snapshot, prevRev));
+            } else {
+                StonyPermsEvents.USER_UPDATED.invoker().onUserUpdated(id, snapshot, prevRev);
+            }
+        }
+    }
+
+    void handleSseEvent(ChangeEvent event) {
+        if (event == null || closed.get()) {
+            return;
+        }
+        api.notifyChangeEvent(event);
+        MinecraftServer srv = this.server;
+        if (srv != null) {
+            srv.execute(() -> {
+                if (closed.get()) {
+                    return;
+                }
+                StonyPermsEvents.CHANGE_RECEIVED.invoker().onChangeReceived(event);
+                dispatchSseRefresh(srv, event);
+            });
+        } else {
+            StonyPermsEvents.CHANGE_RECEIVED.invoker().onChangeReceived(event);
+        }
+    }
+
+    private void dispatchSseRefresh(MinecraftServer srv, ChangeEvent event) {
+        String type = event.type();
+        if ("user_updated".equals(type) || "user_deleted".equals(type)) {
+            ServerPlayer target = null;
+            if (!event.uuid().isEmpty()) {
+                try {
+                    target = srv.getPlayerList().getPlayer(UUID.fromString(event.uuid()));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+            if (target == null && !event.username().isEmpty()) {
+                target = srv.getPlayerList().getPlayerByName(event.username());
+            }
+            if (target != null) {
+                if ("user_deleted".equals(type)) {
+                    cache.invalidate(target.getUUID());
+                }
+                refreshAsync(target);
+            }
+        } else if ("group_updated".equals(type)
+                || "group_deleted".equals(type)
+                || "reload".equals(type)
+                || "expiry_cleanup".equals(type)) {
+            refreshAll(srv);
         }
     }
 
@@ -153,11 +298,25 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     public String status() {
         String error = lastError.isEmpty() ? "none" : lastError;
+        String sseState;
+        StonyPermsEventStream stream = eventStream;
+        if (!config.sseEnabled() || stream == null) {
+            sseState = "disabled";
+        } else if (stream.connected()) {
+            sseState = "connected";
+        } else if (!stream.lastError().isEmpty()) {
+            sseState = "disconnected(" + stream.lastError() + ")";
+        } else {
+            sseState = "connecting";
+        }
         return "StonyPerms bridge: api=" + config.apiUrl()
                 + ", server=" + (config.serverName().isEmpty() ? "(none)" : config.serverName())
                 + ", cached=" + cache.size()
                 + ", refreshing=" + refreshGate.inFlight()
                 + ", failClosed=" + config.failClosed()
+                + ", applyToOps=" + config.applyToOps()
+                + ", write=" + (api.isWriteEnabled() ? "enabled" : "disabled")
+                + ", sse=" + sseState
                 + ", staleGrace=" + config.staleGraceSeconds() + "s"
                 + ", lastError=" + error;
     }
@@ -166,9 +325,13 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         return config;
     }
 
-    private Map<String, String> contexts(ServerPlayer player) {
+    public Map<String, String> contexts(ServerPlayer player) {
         String world = player.level().dimension().identifier().toString();
         return FabricContext.of(config.serverName(), world);
+    }
+
+    public Map<String, String> defaultContexts() {
+        return config.serverName().isEmpty() ? Map.of() : Map.of("server", config.serverName());
     }
 
     private void noteFailure() {
@@ -182,6 +345,12 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     @Override
     public void close() {
+        closed.set(true);
+        StonyPermsEventStream stream = eventStream;
+        eventStream = null;
+        if (stream != null) {
+            stream.close();
+        }
         scheduler.shutdownNow();
         io.shutdownNow();
         checks.shutdownNow();
