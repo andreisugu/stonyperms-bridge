@@ -93,6 +93,21 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         return api;
     }
 
+    public MinecraftServer server() {
+        return server;
+    }
+
+    public Optional<Snapshot> snapshot(ServerPlayer player) {
+        if (player == null) {
+            return Optional.empty();
+        }
+        SnapshotCache.Lookup lookup = service.lookup(player.getUUID(), contexts(player));
+        if (!lookup.present() || (lookup.state() == SnapshotCache.State.STALE && !config.useStaleOnError())) {
+            return Optional.empty();
+        }
+        return Optional.of(lookup.snapshot());
+    }
+
     public void start(MinecraftServer server) {
         this.server = server;
         if (config.sseEnabled()) {

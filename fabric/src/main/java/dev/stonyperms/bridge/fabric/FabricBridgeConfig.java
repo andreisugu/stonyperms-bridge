@@ -3,6 +3,7 @@ package dev.stonyperms.bridge.fabric;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.stonyperms.bridge.core.DisplayFormat;
 
 import java.io.IOException;
 import java.net.URI;
@@ -26,6 +27,9 @@ public record FabricBridgeConfig(
         boolean sseEnabled,
         long sseReconnectMinMs,
         long sseReconnectMaxMs,
+        boolean displayEnabled,
+        boolean chatEnabled,
+        String chatFormat,
         boolean debug,
         int connectTimeoutMs,
         int requestTimeoutMs) {
@@ -59,6 +63,13 @@ public record FabricBridgeConfig(
                 "reconnectMinMs": 1000,
                 "reconnectMaxMs": 30000
               },
+              "display": {
+                "enabled": true
+              },
+              "chat": {
+                "enabled": true,
+                "format": "{prefix}{name}{suffix}&r&7: &f{message}"
+              },
               "debug": false
             }
             """;
@@ -76,7 +87,32 @@ public record FabricBridgeConfig(
             int connectTimeoutMs,
             int requestTimeoutMs) {
         this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                true, false, "", true, 1000L, 30_000L, debug, connectTimeoutMs, requestTimeoutMs);
+                true, false, "", true, 1000L, 30_000L,
+                true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug, connectTimeoutMs, requestTimeoutMs);
+    }
+
+    /** Backward-compatible 17-arg constructor. */
+    public FabricBridgeConfig(
+            URI apiUrl,
+            String token,
+            String writeToken,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean applyToOps,
+            boolean writeEnabled,
+            String defaultActor,
+            boolean sseEnabled,
+            long sseReconnectMinMs,
+            long sseReconnectMaxMs,
+            boolean debug,
+            int connectTimeoutMs,
+            int requestTimeoutMs) {
+        this(apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
+                applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs, sseReconnectMaxMs,
+                true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug, connectTimeoutMs, requestTimeoutMs);
     }
 
     public static FabricBridgeConfig load(Path configDir) throws ConfigException {
@@ -101,6 +137,8 @@ public record FabricBridgeConfig(
             JsonObject api = object(root, "api");
             JsonObject write = object(root, "write");
             JsonObject sse = object(root, "sse");
+            JsonObject display = object(root, "display");
+            JsonObject chat = object(root, "chat");
 
             String url = string(api, "url", "http://127.0.0.1:8737").trim();
             URI apiUrl;
@@ -164,6 +202,9 @@ public record FabricBridgeConfig(
                     bool(sse, "enabled", true),
                     sseMin,
                     sseMax,
+                    bool(display, "enabled", true),
+                    bool(chat, "enabled", true),
+                    DisplayFormat.normalizeChatFormat(string(chat, "format", DisplayFormat.DEFAULT_CHAT_FORMAT)),
                     bool(root, "debug", false),
                     Math.max(250, integer(api, "connectTimeoutMs", 1500)),
                     Math.max(500, integer(api, "requestTimeoutMs", 2500)));

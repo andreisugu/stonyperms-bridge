@@ -30,6 +30,9 @@ class FabricBridgeConfigTest {
         assertTrue(config.applyToOps());
         assertFalse(config.writeEnabled());
         assertTrue(config.sseEnabled());
+        assertTrue(config.displayEnabled());
+        assertTrue(config.chatEnabled());
+        assertEquals("{prefix}{name}{suffix}&r&7: &f{message}", config.chatFormat());
         assertFalse(config.isRemotePlainHttp());
     }
 

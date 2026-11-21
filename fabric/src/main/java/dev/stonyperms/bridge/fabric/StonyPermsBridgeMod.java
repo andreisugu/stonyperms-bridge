@@ -4,8 +4,11 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
+import dev.stonyperms.bridge.core.Snapshot;
+import dev.stonyperms.bridge.core.UserInfo;
 import dev.stonyperms.bridge.core.cmd.BridgeCommandHandler;
 import dev.stonyperms.bridge.core.cmd.CommandPlatform;
+import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import me.lucko.fabric.api.permissions.v0.OfflineOptionRequestEvent;
 import me.lucko.fabric.api.permissions.v0.OfflinePermissionCheckEvent;
 import me.lucko.fabric.api.permissions.v0.OptionRequestEvent;
@@ -57,8 +60,53 @@ public final class StonyPermsBridgeMod implements ModInitializer {
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             FabricBridgeRuntime current = runtime;
             if (current != null) {
-                current.refreshAsync(handler.getPlayer());
+                ServerPlayer player = handler.getPlayer();
+                current.snapshot(player).ifPresentOrElse(
+                        snap -> FabricDisplayManager.apply(server, player, snap, current),
+                        () -> {
+                            if (current.isOpBypassed(server, player) || current.config().failClosed()) {
+                                FabricDisplayManager.clear(server, player.getScoreboardName());
+                            }
+                        });
+                current.refreshAsync(player);
             }
+        });
+
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) ->
+                FabricDisplayManager.clear(server, handler.getPlayer().getScoreboardName()));
+
+        StonyPermsEvents.USER_UPDATED.register((uuid, snapshot, previousRevision) -> {
+            FabricBridgeRuntime current = runtime;
+            if (current == null) {
+                return;
+            }
+            MinecraftServer srv = current.server();
+            if (srv == null) {
+                return;
+            }
+            ServerPlayer online = srv.getPlayerList().getPlayer(uuid);
+            if (online != null) {
+                FabricDisplayManager.apply(srv, online, snapshot, current);
+            }
+        });
+
+        ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {
+            FabricBridgeRuntime current = runtime;
+            if (sender == null || current == null || !current.config().chatEnabled()) {
+                return true;
+            }
+            MinecraftServer srv = current.server();
+            if (srv == null || current.isOpBypassed(srv, sender)) {
+                return true;
+            }
+            UserInfo user = current.snapshot(sender).map(Snapshot::user).orElse(null);
+            Component formatted = FabricDisplayManager.formatChatMessage(
+                    current.config().chatFormat(),
+                    user,
+                    sender.getScoreboardName(),
+                    message.signedContent());
+            srv.getPlayerList().broadcastSystemMessage(formatted, false);
+            return false;
         });
 
         PermissionCheckEvent.EVENT.register((source, permission) -> {

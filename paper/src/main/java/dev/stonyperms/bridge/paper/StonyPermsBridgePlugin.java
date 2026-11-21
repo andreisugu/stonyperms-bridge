@@ -5,8 +5,10 @@ import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
 import dev.stonyperms.bridge.core.BridgeService;
 import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.Contexts;
+import dev.stonyperms.bridge.core.DisplayFormat;
 import dev.stonyperms.bridge.core.PermissionResolver;
 import dev.stonyperms.bridge.core.Snapshot;
+import dev.stonyperms.bridge.core.UserInfo;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.StonyPermsClient;
 import dev.stonyperms.bridge.core.StonyPermsEventStream;
@@ -15,14 +17,17 @@ import dev.stonyperms.bridge.core.cmd.CommandPlatform;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
+import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -120,6 +125,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         appliedSnapshots.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
+            clearPlayerDisplay(player);
         }
         if (client != null) {
             client.close();
@@ -162,6 +168,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         appliedSnapshots.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
+            clearPlayerDisplay(player);
         }
         if (client != null) {
             client.close();
@@ -348,7 +355,24 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         managedKeys.remove(id);
         appliedSnapshots.remove(id);
         applier.clear(event.getPlayer());
+        clearPlayerDisplay(event.getPlayer());
         refreshing.remove(id);
+    }
+
+    @EventHandler(priority = EventPriority.LOW, ignoreCancelled = true)
+    public void onAsyncChat(AsyncChatEvent event) {
+        PaperBridgeConfig config = bridgeConfig;
+        if (config == null || !config.chatEnabled()) {
+            return;
+        }
+        Player player = event.getPlayer();
+        if (player.isOp() && !config.applyToOps()) {
+            return;
+        }
+        Snapshot snap = appliedSnapshots.get(player.getUniqueId());
+        UserInfo user = snap != null ? snap.user() : null;
+        event.renderer((source, sourceDisplayName, message, viewer) ->
+                renderChatMessage(config.chatFormat(), user, source.getName(), message));
     }
 
     @EventHandler
@@ -391,6 +415,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             cancelReapply(id);
             appliedSnapshots.remove(id);
             applier.clear(player);
+            clearPlayerDisplay(player);
             return;
         }
         Map<String, String> contexts = contexts(player);
@@ -410,6 +435,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
                     values, universe.registered());
             managedKeys.put(id, Set.copyOf(values.keySet()));
             applier.apply(player, safe);
+            applyPlayerDisplay(player, snapshot.user());
             scheduleReapply(player, key, snapshot);
 
             Snapshot prev = appliedSnapshots.put(id, snapshot);
@@ -436,6 +462,62 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         Set<String> permissions = new java.util.HashSet<>(universe.collect());
         permissions.addAll(managedKeys.getOrDefault(id, Set.of()));
         applier.apply(player, PaperMaterialization.failClosedValues(permissions));
+        clearPlayerDisplay(player);
+    }
+
+    private void applyPlayerDisplay(Player player, UserInfo user) {
+        PaperBridgeConfig config = bridgeConfig;
+        if (config == null || !config.tablistEnabled()) {
+            return;
+        }
+        String formatted = DisplayFormat.translateAlternateColorCodes(
+                DisplayFormat.formatDisplayName(user, player.getName()));
+        Component display = LegacyComponentSerializer.legacySection().deserialize(formatted);
+        player.displayName(display);
+        player.playerListName(display);
+    }
+
+    private void clearPlayerDisplay(Player player) {
+        PaperBridgeConfig config = bridgeConfig;
+        if (config == null || !config.tablistEnabled()) {
+            return;
+        }
+        player.displayName(null);
+        player.playerListName(null);
+    }
+
+    static Component renderChatMessage(String format, UserInfo user, String username, Component message) {
+        DisplayFormat.ChatParts parts = DisplayFormat.formatChatParts(format, user, username);
+        LegacyComponentSerializer legacy = LegacyComponentSerializer.legacySection();
+        Component before = legacy.deserialize(DisplayFormat.translateAlternateColorCodes(parts.beforeMessage()));
+        Component after = parts.afterMessage().isEmpty()
+                ? Component.empty()
+                : legacy.deserialize(DisplayFormat.translateAlternateColorCodes(parts.afterMessage()));
+        NamedTextColor msgColor = namedColorForCode(DisplayFormat.trailingColorCode(parts.beforeMessage()));
+        Component msgPart = msgColor == null ? message : message.colorIfAbsent(msgColor);
+        return Component.text().append(before).append(msgPart).append(after).build();
+    }
+
+    static NamedTextColor namedColorForCode(char code) {
+        return switch (Character.toLowerCase(code)) {
+            case '0' -> NamedTextColor.BLACK;
+            case '1' -> NamedTextColor.DARK_BLUE;
+            case '2' -> NamedTextColor.DARK_GREEN;
+            case '3' -> NamedTextColor.DARK_AQUA;
+            case '4' -> NamedTextColor.DARK_RED;
+            case '5' -> NamedTextColor.DARK_PURPLE;
+            case '6' -> NamedTextColor.GOLD;
+            case '7' -> NamedTextColor.GRAY;
+            case '8' -> NamedTextColor.DARK_GRAY;
+            case '9' -> NamedTextColor.BLUE;
+            case 'a' -> NamedTextColor.GREEN;
+            case 'b' -> NamedTextColor.AQUA;
+            case 'c' -> NamedTextColor.RED;
+            case 'd' -> NamedTextColor.LIGHT_PURPLE;
+            case 'e' -> NamedTextColor.YELLOW;
+            case 'f' -> NamedTextColor.WHITE;
+            default -> null;
+        };
     }
 
     private void scheduleReapply(Player player, SnapshotCache.Key key, Snapshot snapshot) {

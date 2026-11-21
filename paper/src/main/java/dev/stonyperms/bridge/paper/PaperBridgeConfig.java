@@ -1,5 +1,6 @@
 package dev.stonyperms.bridge.paper;
 
+import dev.stonyperms.bridge.core.DisplayFormat;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.io.IOException;
@@ -26,11 +27,14 @@ public record PaperBridgeConfig(
         long sseReconnectMaxMs,
         boolean integrationsPlaceholderApi,
         boolean integrationsVault,
+        boolean chatEnabled,
+        String chatFormat,
+        boolean tablistEnabled,
         boolean debug) {
 
     public static final int MIN_TOKEN_LENGTH = 16;
 
-    /** Backward-compatible 9-arg constructor (defaults to read-only with SSE & integrations enabled). */
+    /** Backward-compatible 9-arg constructor (defaults to read-only with SSE, integrations & display enabled). */
     public PaperBridgeConfig(
             URI apiUrl,
             String token,
@@ -42,7 +46,33 @@ public record PaperBridgeConfig(
             boolean applyToOps,
             boolean debug) {
         this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                applyToOps, false, "", true, 1000L, 30_000L, true, true, debug);
+                applyToOps, false, "", true, 1000L, 30_000L, true, true,
+                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug);
+    }
+
+    /** Backward-compatible 17-arg constructor. */
+    public PaperBridgeConfig(
+            URI apiUrl,
+            String token,
+            String writeToken,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean applyToOps,
+            boolean writeEnabled,
+            String defaultActor,
+            boolean sseEnabled,
+            long sseReconnectMinMs,
+            long sseReconnectMaxMs,
+            boolean integrationsPlaceholderApi,
+            boolean integrationsVault,
+            boolean debug) {
+        this(apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
+                applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs, sseReconnectMaxMs,
+                integrationsPlaceholderApi, integrationsVault,
+                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug);
     }
 
     public static PaperBridgeConfig from(FileConfiguration config, Path dataFolder) throws PaperConfigException {
@@ -128,6 +158,9 @@ public record PaperBridgeConfig(
                 sseMax,
                 config.getBoolean("integrations.placeholderapi", true),
                 config.getBoolean("integrations.vault", true),
+                config.getBoolean("chat.enabled", true),
+                DisplayFormat.normalizeChatFormat(config.getString("chat.format", DisplayFormat.DEFAULT_CHAT_FORMAT)),
+                config.getBoolean("tablist.enabled", true),
                 config.getBoolean("debug", false));
     }
 
