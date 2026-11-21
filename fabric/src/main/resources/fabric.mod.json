@@ -3,7 +3,7 @@
   "id": "stonyperms-bridge",
   "version": "${version}",
   "name": "StonyPerms Bridge",
-  "description": "Fabric permissions provider backed by the StonyPerms Gate HTTP API.",
+  "description": "Applies StonyPerms permissions (Gate bridge or standalone) to Fabric via fabric-permissions-api.",
   "authors": [
     "andreisugu"
   ],
