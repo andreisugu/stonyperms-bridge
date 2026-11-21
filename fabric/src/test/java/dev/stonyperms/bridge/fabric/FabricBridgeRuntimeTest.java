@@ -4,7 +4,13 @@ import com.mojang.authlib.GameProfile;
 import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.ParentMode;
 import dev.stonyperms.bridge.core.Snapshot;
+import dev.stonyperms.bridge.core.Tri;
 import dev.stonyperms.bridge.core.UserInfo;
+import dev.stonyperms.bridge.core.local.LocalPermissionManager;
+import dev.stonyperms.bridge.core.local.StandaloneConfig;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
+import java.util.Optional;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.players.NameAndId;
 import net.minecraft.server.players.PlayerList;
@@ -97,5 +103,40 @@ class FabricBridgeRuntimeTest {
                 StonyPermsBridgeMod.combineRootAndTail("user", "Steve group ", true));
         assertArrayEquals(new String[]{"user", "Steve", "group", "add"},
                 StonyPermsBridgeMod.combineRootAndTail("user", "Steve group add", false));
+    }
+
+    @Test
+    void runsEndToEndStandaloneModeWithoutHttp(@TempDir Path tempDir) throws Exception {
+        StandaloneConfig st = StandaloneConfig.defaults(tempDir);
+        FabricBridgeConfig cfg = new FabricBridgeConfig(
+                FabricBridgeConfig.Mode.STANDALONE,
+                null, "", "", "smp",
+                30, 300, true, true, true, true, "",
+                false, 1000L, 30_000L, false, false, "{prefix}{name}: {message}",
+                false, 1500, 2500, st);
+
+        List<String> events = new ArrayList<>();
+        StonyPermsEvents.CHANGE_RECEIVED.register(ev -> events.add(ev.type()));
+
+        UUID id = UUID.randomUUID();
+        try (FabricBridgeRuntime rt = new FabricBridgeRuntime(cfg, LoggerFactory.getLogger("test"))) {
+            assertTrue(rt.api().isStandalone());
+            assertTrue(rt.status().contains("StonyPerms standalone"));
+
+            rt.api().createGroup("vip", 50, "&aVIP", "test", null).join();
+            rt.api().setGroupPermission("vip", "fabric.fly", true, 0L, 0L, Map.of(), "test", null).join();
+            rt.api().setGroupMeta("vip", "tier", "diamond", "test", null).join();
+            rt.api().ensureUser(id, "Alex", "default", true, "test", null).join();
+            rt.api().addParent(id.toString(), "vip", ParentMode.ADD, 0L, Map.of(), true).join();
+
+            assertEquals(Tri.TRUE, rt.resolveOffline(id, "fabric.fly").value());
+            assertEquals(Optional.of("diamond"), rt.optionOffline(id, "tier"));
+            Thread.sleep(50L);
+            assertTrue(events.contains("group_updated") || events.contains("user_updated"));
+        }
+
+        try (LocalPermissionManager reopened = new LocalPermissionManager(st, null)) {
+            assertEquals("true", reopened.check(id, "fabric.fly", Map.of()).value());
+        }
     }
 }

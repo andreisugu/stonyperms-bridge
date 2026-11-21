@@ -10,8 +10,10 @@ import dev.stonyperms.bridge.core.PermissionResolver;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.UserInfo;
 import dev.stonyperms.bridge.core.SnapshotCache;
+import dev.stonyperms.bridge.core.StonyPermsBackend;
 import dev.stonyperms.bridge.core.StonyPermsClient;
 import dev.stonyperms.bridge.core.StonyPermsEventStream;
+import dev.stonyperms.bridge.core.local.LocalStonyPermsBackend;
 import dev.stonyperms.bridge.core.cmd.BridgeCommandHandler;
 import dev.stonyperms.bridge.core.cmd.CommandPlatform;
 import net.kyori.adventure.text.Component;
@@ -36,10 +38,13 @@ import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.logging.Level;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -68,11 +73,13 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
     private ExecutorService io;
     private PaperBridgeConfig bridgeConfig;
-    private StonyPermsClient client;
+    private StonyPermsBackend backend;
+    private LocalStonyPermsBackend localBackend;
     private BridgeService service;
     private DefaultStonyPermsBridgeAPI api;
     private StonyPermsEventStream eventStream;
     private BridgeCommandHandler commandHandler;
+    private Command standaloneCommand;
     private PaperPermissionUniverse universe;
     private Runnable placeholderCleanup = () -> {};
     private Runnable vaultCleanup = () -> {};
@@ -106,8 +113,13 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             getCommand("spb").setExecutor(this);
             getCommand("spb").setTabCompleter(this);
         }
-        getLogger().info("StonyPerms bridge enabled for " + bridgeConfig.apiUrl()
-                + " (write=" + api.isWriteEnabled() + ", sse=" + bridgeConfig.sseEnabled() + ")");
+        if (bridgeConfig.isStandalone()) {
+            getLogger().info("StonyPerms standalone enabled (storage="
+                    + bridgeConfig.standalone().storageDir() + ", write=" + api.isWriteEnabled() + ")");
+        } else {
+            getLogger().info("StonyPerms bridge enabled for " + bridgeConfig.apiUrl()
+                    + " (write=" + api.isWriteEnabled() + ", sse=" + bridgeConfig.sseEnabled() + ")");
+        }
     }
 
     @Override
@@ -115,6 +127,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         activeApi = null;
         stopScheduler();
         stopEventStream();
+        unregisterStandaloneCommand();
         runCleanups();
         getServer().getServicesManager().unregisterAll(this);
         for (BukkitTask task : reapplyTasks.values()) {
@@ -127,8 +140,13 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             applier.clear(player);
             clearPlayerDisplay(player);
         }
-        if (client != null) {
-            client.close();
+        localBackend = null;
+        if (backend != null) {
+            try {
+                backend.close();
+            } catch (Exception ignored) {
+            }
+            backend = null;
         }
         if (io != null) {
             io.shutdownNow();
@@ -146,18 +164,37 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
         Duration connectTimeout = Duration.ofMillis(Math.max(250, getConfig().getInt("api.connect-timeout-ms", 1500)));
         Duration requestTimeout = Duration.ofMillis(Math.max(500, getConfig().getInt("api.request-timeout-ms", 2500)));
-        StonyPermsClient newClient = new StonyPermsClient(
-                newConfig.apiUrl(),
-                newConfig.token(),
-                newConfig.writeToken(),
-                connectTimeout,
-                requestTimeout);
+        StonyPermsBackend newBackend;
+        LocalStonyPermsBackend newLocalBackend = null;
+        if (newConfig.isStandalone()) {
+            try {
+                newLocalBackend = LocalStonyPermsBackend.create(newConfig.standalone(), this::handleChangeEvent);
+            } catch (IOException error) {
+                getLogger().log(Level.SEVERE,
+                        "Failed to initialize StonyPerms standalone storage: " + error.getMessage(), error);
+                return false;
+            }
+            newBackend = newLocalBackend;
+        } else {
+            newBackend = new StonyPermsClient(
+                    newConfig.apiUrl(),
+                    newConfig.token(),
+                    newConfig.writeToken(),
+                    connectTimeout,
+                    requestTimeout);
+        }
         SnapshotCache cache = new SnapshotCache(newConfig.staleGraceSeconds() * 1000L);
         BridgeService newService = new BridgeService(
-                newClient, cache, resolver, newConfig.failClosed(), newConfig.useStaleOnError());
+                newBackend, cache, resolver, newConfig.failClosed(), newConfig.useStaleOnError());
+        if (newLocalBackend != null) {
+            LocalStonyPermsBackend capture = newLocalBackend;
+            newService.setVerboseObserver((uuid, perm, dec) ->
+                    capture.recordResolvedCheck(uuid, perm, dec.value().name().toLowerCase(Locale.ROOT), dec.source()));
+        }
 
         stopScheduler();
         stopEventStream();
+        unregisterStandaloneCommand();
         runCleanups();
         getServer().getServicesManager().unregisterAll(this);
         for (BukkitTask task : reapplyTasks.values()) {
@@ -170,19 +207,25 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             applier.clear(player);
             clearPlayerDisplay(player);
         }
-        if (client != null) {
-            client.close();
+        localBackend = null;
+        if (backend != null) {
+            try {
+                backend.close();
+            } catch (Exception ignored) {
+            }
+            backend = null;
         }
 
         bridgeConfig = newConfig;
-        client = newClient;
+        backend = newBackend;
+        localBackend = newLocalBackend;
         service = newService;
         universe = new PaperPermissionUniverse(getServer().getPluginManager());
         lastError = "";
 
         DefaultStonyPermsBridgeAPI newApi = new DefaultStonyPermsBridgeAPI(
                 newService,
-                newClient,
+                newBackend,
                 io,
                 newConfig.writeEnabled(),
                 newConfig.effectiveDefaultActor(),
@@ -210,20 +253,61 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             getLogger().warning("api.url uses plain HTTP to a non-loopback host; prefer TLS or a private network");
         }
 
-        if (newConfig.sseEnabled()) {
+        if (newConfig.isStandalone()) {
+            registerStandaloneCommand();
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                refreshSyncStandalone(player, true);
+            }
+        } else if (newConfig.sseEnabled()) {
             StonyPermsEventStream stream = new StonyPermsEventStream(
                     newConfig.apiUrl(),
                     newConfig.token(),
                     connectTimeout,
                     newConfig.sseReconnectMinMs(),
                     newConfig.sseReconnectMaxMs(),
-                    this::handleSseEvent);
+                    this::handleChangeEvent);
             eventStream = stream;
             stream.start();
         }
 
         startScheduler();
         return true;
+    }
+
+    private void registerStandaloneCommand() {
+        unregisterStandaloneCommand();
+        Command cmd = new Command(
+                "sp",
+                "StonyPerms standalone permission administration",
+                "/sp <status|info|refresh|check|search|reload|user|group|track|log|editor|applyedits|tree|verbose>",
+                List.of("stonyperms")) {
+            @Override
+            public boolean execute(CommandSender sender, String commandLabel, String[] args) {
+                return StonyPermsBridgePlugin.this.onCommand(sender, this, commandLabel, args);
+            }
+
+            @Override
+            public List<String> tabComplete(CommandSender sender, String alias, String[] args) {
+                return StonyPermsBridgePlugin.this.onTabComplete(sender, this, alias, args);
+            }
+        };
+        if (Bukkit.getCommandMap().register("stonyperms", cmd)) {
+            standaloneCommand = cmd;
+        }
+    }
+
+    private void unregisterStandaloneCommand() {
+        Command cmd = standaloneCommand;
+        standaloneCommand = null;
+        if (cmd == null) {
+            return;
+        }
+        try {
+            var commandMap = Bukkit.getCommandMap();
+            cmd.unregister(commandMap);
+            commandMap.getKnownCommands().entrySet().removeIf(entry -> entry.getValue() == cmd);
+        } catch (RuntimeException ignored) {
+        }
     }
 
     private void runCleanups() {
@@ -247,7 +331,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         }
     }
 
-    private void handleSseEvent(ChangeEvent event) {
+    private void handleChangeEvent(ChangeEvent event) {
         DefaultStonyPermsBridgeAPI currentApi = api;
         if (currentApi != null) {
             currentApi.notifyChangeEvent(event);
@@ -344,8 +428,13 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
-        applyPlayer(event.getPlayer());
-        refreshAsync(event.getPlayer());
+        Player player = event.getPlayer();
+        if (bridgeConfig != null && bridgeConfig.isStandalone() && localBackend != null) {
+            refreshSyncStandalone(player, true);
+            return;
+        }
+        applyPlayer(player);
+        refreshAsync(player);
     }
 
     @EventHandler
@@ -377,8 +466,33 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
-        applyPlayer(event.getPlayer());
-        refreshAsync(event.getPlayer());
+        Player player = event.getPlayer();
+        if (bridgeConfig != null && bridgeConfig.isStandalone() && localBackend != null) {
+            refreshSyncStandalone(player, false);
+            return;
+        }
+        applyPlayer(player);
+        refreshAsync(player);
+    }
+
+    private void refreshSyncStandalone(Player player, boolean ensureUser) {
+        LocalStonyPermsBackend local = localBackend;
+        BridgeService currentService = service;
+        if (local == null || currentService == null) {
+            return;
+        }
+        try {
+            if (ensureUser) {
+                local.ensureOnlineUser(
+                        player.getUniqueId(), player.getName(), bridgeConfig.effectiveDefaultActor());
+            }
+            currentService.refresh(player.getUniqueId(), contexts(player));
+            lastError = "";
+        } catch (Exception error) {
+            lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
+            noteFailure();
+        }
+        applyPlayer(player);
     }
 
     private void refreshAsync(Player player) {
@@ -607,12 +721,18 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
         @Override
         public boolean hasAdminPermission(Object sender) {
-            return sender instanceof CommandSender cs && cs.hasPermission("stonyperms.bridge.admin");
+            return sender instanceof CommandSender cs
+                    && (cs.hasPermission("stonyperms.bridge.admin")
+                    || cs.hasPermission("stonyperms.admin")
+                    || cs.hasPermission("stonyperms.*"));
         }
 
         @Override
         public boolean hasWritePermission(Object sender) {
-            return sender instanceof CommandSender cs && cs.hasPermission("stonyperms.bridge.write");
+            return sender instanceof CommandSender cs
+                    && (cs.hasPermission("stonyperms.bridge.write")
+                    || cs.hasPermission("stonyperms.admin")
+                    || cs.hasPermission("stonyperms.*"));
         }
 
         @Override
@@ -685,6 +805,29 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
         @Override
         public String statusSummary() {
+            if (bridgeConfig.isStandalone() && localBackend != null) {
+                var mgr = localBackend.manager();
+                StringBuilder sb = new StringBuilder();
+                sb.append("StonyPerms standalone\n");
+                sb.append("  mode: standalone\n");
+                sb.append("  storage: ").append(bridgeConfig.standalone().storageDir()).append('\n');
+                sb.append("  revision: ").append(mgr.revision())
+                        .append(" (users=").append(mgr.usersCount())
+                        .append(", groups=").append(mgr.groupsCount())
+                        .append(", tracks=").append(mgr.tracksCount()).append(")\n");
+                sb.append("  server context: ")
+                        .append(bridgeConfig.serverName().isEmpty() ? "(none)" : bridgeConfig.serverName()).append('\n');
+                sb.append("  cached snapshots: ").append(service.cache().size()).append('\n');
+                sb.append("  attachments: ").append(applier.size()).append('\n');
+                sb.append("  fail-closed: ").append(bridgeConfig.failClosed()).append('\n');
+                sb.append("  write: ").append(api.isWriteEnabled()
+                        ? "enabled (actor=" + bridgeConfig.effectiveDefaultActor() + ")"
+                        : "disabled");
+                if (!lastError.isEmpty()) {
+                    sb.append("\n  last error: ").append(lastError);
+                }
+                return sb.toString();
+            }
             String sseState;
             StonyPermsEventStream stream = eventStream;
             if (!bridgeConfig.sseEnabled() || stream == null) {

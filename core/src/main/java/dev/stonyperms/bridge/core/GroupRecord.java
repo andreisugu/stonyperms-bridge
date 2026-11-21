@@ -12,7 +12,20 @@ public record GroupRecord(
         List<Node> nodes,
         Map<String, String> meta,
         List<PriorityMeta> prefixes,
-        List<PriorityMeta> suffixes) {
+        List<PriorityMeta> suffixes,
+        List<MetaEntry> metaEntries) {
+
+    public GroupRecord(
+            String name,
+            String displayName,
+            int weight,
+            List<ParentEntry> parents,
+            List<Node> nodes,
+            Map<String, String> meta,
+            List<PriorityMeta> prefixes,
+            List<PriorityMeta> suffixes) {
+        this(name, displayName, weight, parents, nodes, meta, prefixes, suffixes, List.of());
+    }
 
     public GroupRecord {
         name = name == null ? "" : name;
@@ -22,6 +35,7 @@ public record GroupRecord(
         meta = meta == null || meta.isEmpty() ? Map.of() : Map.copyOf(meta);
         prefixes = prefixes == null ? List.of() : List.copyOf(prefixes);
         suffixes = suffixes == null ? List.of() : List.copyOf(suffixes);
+        metaEntries = metaEntries == null ? List.of() : List.copyOf(metaEntries);
     }
 
     public String effectiveDisplayName() {

@@ -1,0 +1,36 @@
+{
+  "uuid": "550e8400-e29b-41d4-a716-446655440000",
+  "username": "InterOper",
+  "primaryGroup": "vip",
+  "parents": [
+    {
+      "group": "vip"
+    }
+  ],
+  "nodes": [
+    {
+      "key": "essentials.fly",
+      "value": false
+    },
+    {
+      "key": "essentials.fly",
+      "value": true,
+      "contexts": {
+        "server": "creative"
+      }
+    }
+  ],
+  "meta": {
+    "tier": "gold"
+  },
+  "metaEntries": [
+    {
+      "key": "banner",
+      "value": "lobby-special",
+      "priority": 10,
+      "contexts": {
+        "server": "lobby"
+      }
+    }
+  ]
+}

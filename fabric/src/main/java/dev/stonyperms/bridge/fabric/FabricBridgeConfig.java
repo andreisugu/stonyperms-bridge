@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.stonyperms.bridge.core.DisplayFormat;
+import dev.stonyperms.bridge.core.local.StandaloneConfig;
 
 import java.io.IOException;
 import java.net.URI;
@@ -13,6 +14,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 public record FabricBridgeConfig(
+        Mode mode,
         URI apiUrl,
         String token,
         String writeToken,
@@ -32,13 +34,20 @@ public record FabricBridgeConfig(
         String chatFormat,
         boolean debug,
         int connectTimeoutMs,
-        int requestTimeoutMs) {
+        int requestTimeoutMs,
+        StandaloneConfig standalone) {
+
+    public enum Mode {
+        BRIDGE,
+        STANDALONE
+    }
 
     public static final int MIN_TOKEN_LENGTH = 16;
     public static final String FILE_NAME = "stonyperms-bridge.json";
 
     private static final String DEFAULT_CONFIG = """
             {
+              "mode": "bridge",
               "api": {
                 "url": "http://127.0.0.1:8737",
                 "token": "",
@@ -47,6 +56,25 @@ public record FabricBridgeConfig(
                 "writeTokenFile": "",
                 "connectTimeoutMs": 1500,
                 "requestTimeoutMs": 2500
+              },
+              "standalone": {
+                "storageDir": "stonyperms/data",
+                "defaultGroup": "default",
+                "primaryGroupCalculation": "stored",
+                "auditLog": true,
+                "webBaseUrl": "https://andreisugu.github.io/gate-stonyperms",
+                "expiryCleanupSeconds": 60,
+                "stack": {
+                  "prefixEnabled": false,
+                  "prefixStartSpacer": "",
+                  "prefixMidSpacer": " ",
+                  "prefixEndSpacer": "",
+                  "suffixEnabled": false,
+                  "suffixStartSpacer": "",
+                  "suffixMidSpacer": " ",
+                  "suffixEndSpacer": "",
+                  "deduplicate": true
+                }
               },
               "serverName": "",
               "refreshSeconds": 30,
@@ -86,9 +114,9 @@ public record FabricBridgeConfig(
             boolean debug,
             int connectTimeoutMs,
             int requestTimeoutMs) {
-        this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                true, false, "", true, 1000L, 30_000L,
-                true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug, connectTimeoutMs, requestTimeoutMs);
+        this(Mode.BRIDGE, apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, true, false, "", true, 1000L, 30_000L,
+                true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug, connectTimeoutMs, requestTimeoutMs, null);
     }
 
     /** Backward-compatible 17-arg constructor. */
@@ -110,9 +138,60 @@ public record FabricBridgeConfig(
             boolean debug,
             int connectTimeoutMs,
             int requestTimeoutMs) {
-        this(apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs, sseReconnectMaxMs,
-                true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug, connectTimeoutMs, requestTimeoutMs);
+        this(Mode.BRIDGE, apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs,
+                sseReconnectMaxMs, true, true, DisplayFormat.DEFAULT_CHAT_FORMAT, debug,
+                connectTimeoutMs, requestTimeoutMs, null);
+    }
+
+    /** Backward-compatible 20-arg constructor. */
+    public FabricBridgeConfig(
+            URI apiUrl,
+            String token,
+            String writeToken,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean applyToOps,
+            boolean writeEnabled,
+            String defaultActor,
+            boolean sseEnabled,
+            long sseReconnectMinMs,
+            long sseReconnectMaxMs,
+            boolean displayEnabled,
+            boolean chatEnabled,
+            String chatFormat,
+            boolean debug,
+            int connectTimeoutMs,
+            int requestTimeoutMs) {
+        this(Mode.BRIDGE, apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs,
+                sseReconnectMaxMs, displayEnabled, chatEnabled, chatFormat, debug,
+                connectTimeoutMs, requestTimeoutMs, null);
+    }
+
+    public boolean isStandalone() {
+        return mode == Mode.STANDALONE;
+    }
+
+    /** Non-throwing check of existing config used during early Brigadier command registration. */
+    public static boolean peekIsStandalone(Path configDir) {
+        if (configDir == null) {
+            return false;
+        }
+        Path file = configDir.resolve(FILE_NAME);
+        if (!Files.isRegularFile(file)) {
+            return false;
+        }
+        try {
+            JsonObject root = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
+            String rawMode = string(root, "mode", "bridge").trim().toLowerCase(Locale.ROOT);
+            return "standalone".equals(rawMode);
+        } catch (IOException | RuntimeException ignored) {
+            return false;
+        }
     }
 
     public static FabricBridgeConfig load(Path configDir) throws ConfigException {
@@ -139,55 +218,106 @@ public record FabricBridgeConfig(
             JsonObject sse = object(root, "sse");
             JsonObject display = object(root, "display");
             JsonObject chat = object(root, "chat");
+            JsonObject standalone = object(root, "standalone");
 
-            String url = string(api, "url", "http://127.0.0.1:8737").trim();
-            URI apiUrl;
-            try {
-                apiUrl = URI.create(url);
-            } catch (IllegalArgumentException error) {
-                throw new ConfigException("api.url is not a valid URI", error);
-            }
-            String scheme = apiUrl.getScheme() == null ? "" : apiUrl.getScheme().toLowerCase(Locale.ROOT);
-            if (!scheme.equals("http") && !scheme.equals("https")) {
-                throw new ConfigException("api.url must use http or https");
-            }
-            if (apiUrl.getHost() == null) {
-                throw new ConfigException("api.url must include a host");
+            String rawMode = string(root, "mode", "bridge").trim().toLowerCase(Locale.ROOT);
+            Mode mode;
+            if (rawMode.isEmpty() || rawMode.equals("bridge")) {
+                mode = Mode.BRIDGE;
+            } else if (rawMode.equals("standalone")) {
+                mode = Mode.STANDALONE;
+            } else {
+                throw new ConfigException("mode must be 'bridge' or 'standalone', got: " + rawMode);
             }
 
-            String token = resolveToken(
-                    string(api, "token", ""),
-                    string(api, "tokenFile", ""),
-                    configDir,
-                    envToken);
-            if (token.isEmpty()) {
-                throw new ConfigException("no API token: set STONYPERMS_BRIDGE_TOKEN, api.token, or api.tokenFile");
-            }
-            if (token.length() < MIN_TOKEN_LENGTH) {
-                throw new ConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
-            }
+            URI apiUrl = null;
+            String token = "";
+            String writeToken = "";
+            boolean writeEnabled;
+            boolean sseEnabled;
+            StandaloneConfig standaloneCfg = null;
 
-            boolean writeEnabled = bool(write, "enabled", false);
-            String writeToken = resolveToken(
-                    string(api, "writeToken", ""),
-                    string(api, "writeTokenFile", ""),
-                    configDir,
-                    envWriteToken);
-            if (writeEnabled) {
-                if (writeToken.isEmpty()) {
-                    throw new ConfigException(
-                            "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.writeToken, or api.writeTokenFile");
+            if (mode == Mode.STANDALONE) {
+                writeEnabled = bool(write, "enabled", true);
+                sseEnabled = false;
+                String rawStorage = string(standalone, "storageDir", "stonyperms/data").trim();
+                if (rawStorage.isEmpty()) {
+                    rawStorage = "stonyperms/data";
                 }
-                if (writeToken.length() < MIN_TOKEN_LENGTH) {
-                    throw new ConfigException(
-                            "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+                Path storagePath = Path.of(rawStorage);
+                if (!storagePath.isAbsolute()) {
+                    storagePath = configDir.resolve(storagePath);
                 }
+                JsonObject stackObj = object(standalone, "stack");
+                StandaloneConfig.StackConfig stackCfg = new StandaloneConfig.StackConfig(
+                        bool(stackObj, "prefixEnabled", false),
+                        string(stackObj, "prefixStartSpacer", ""),
+                        string(stackObj, "prefixMidSpacer", " "),
+                        string(stackObj, "prefixEndSpacer", ""),
+                        bool(stackObj, "suffixEnabled", false),
+                        string(stackObj, "suffixStartSpacer", ""),
+                        string(stackObj, "suffixMidSpacer", " "),
+                        string(stackObj, "suffixEndSpacer", ""),
+                        bool(stackObj, "deduplicate", true));
+                standaloneCfg = new StandaloneConfig(
+                        storagePath,
+                        string(standalone, "defaultGroup", "default").trim(),
+                        string(standalone, "primaryGroupCalculation", "stored").trim(),
+                        stackCfg,
+                        bool(standalone, "auditLog", true),
+                        string(standalone, "webBaseUrl", StandaloneConfig.DEFAULT_WEB_URL).trim(),
+                        Math.max(5L, longVal(standalone, "expiryCleanupSeconds", 60L)));
+            } else {
+                String url = string(api, "url", "http://127.0.0.1:8737").trim();
+                try {
+                    apiUrl = URI.create(url);
+                } catch (IllegalArgumentException error) {
+                    throw new ConfigException("api.url is not a valid URI", error);
+                }
+                String scheme = apiUrl.getScheme() == null ? "" : apiUrl.getScheme().toLowerCase(Locale.ROOT);
+                if (!scheme.equals("http") && !scheme.equals("https")) {
+                    throw new ConfigException("api.url must use http or https");
+                }
+                if (apiUrl.getHost() == null) {
+                    throw new ConfigException("api.url must include a host");
+                }
+
+                token = resolveToken(
+                        string(api, "token", ""),
+                        string(api, "tokenFile", ""),
+                        configDir,
+                        envToken);
+                if (token.isEmpty()) {
+                    throw new ConfigException("no API token: set STONYPERMS_BRIDGE_TOKEN, api.token, or api.tokenFile");
+                }
+                if (token.length() < MIN_TOKEN_LENGTH) {
+                    throw new ConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
+                }
+
+                writeEnabled = bool(write, "enabled", false);
+                writeToken = resolveToken(
+                        string(api, "writeToken", ""),
+                        string(api, "writeTokenFile", ""),
+                        configDir,
+                        envWriteToken);
+                if (writeEnabled) {
+                    if (writeToken.isEmpty()) {
+                        throw new ConfigException(
+                                "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.writeToken, or api.writeTokenFile");
+                    }
+                    if (writeToken.length() < MIN_TOKEN_LENGTH) {
+                        throw new ConfigException(
+                                "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+                    }
+                }
+                sseEnabled = bool(sse, "enabled", true);
             }
 
             long sseMin = Math.max(100L, longVal(sse, "reconnectMinMs", 1000L));
             long sseMax = Math.max(sseMin, longVal(sse, "reconnectMaxMs", 30_000L));
 
             return new FabricBridgeConfig(
+                    mode,
                     apiUrl,
                     token,
                     writeToken,
@@ -199,7 +329,7 @@ public record FabricBridgeConfig(
                     bool(root, "applyToOps", true),
                     writeEnabled,
                     string(write, "defaultActor", "").trim(),
-                    bool(sse, "enabled", true),
+                    sseEnabled,
                     sseMin,
                     sseMax,
                     bool(display, "enabled", true),
@@ -207,7 +337,8 @@ public record FabricBridgeConfig(
                     DisplayFormat.normalizeChatFormat(string(chat, "format", DisplayFormat.DEFAULT_CHAT_FORMAT)),
                     bool(root, "debug", false),
                     Math.max(250, integer(api, "connectTimeoutMs", 1500)),
-                    Math.max(500, integer(api, "requestTimeoutMs", 2500)));
+                    Math.max(500, integer(api, "requestTimeoutMs", 2500)),
+                    standaloneCfg);
         } catch (IOException error) {
             throw new ConfigException("cannot read " + file, error);
         } catch (RuntimeException error) {
@@ -271,6 +402,9 @@ public record FabricBridgeConfig(
     }
 
     public boolean isRemotePlainHttp() {
+        if (isStandalone() || apiUrl == null) {
+            return false;
+        }
         if (apiUrl.getScheme() == null || !apiUrl.getScheme().equalsIgnoreCase("http")) {
             return false;
         }

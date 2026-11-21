@@ -1,0 +1,188 @@
+{
+  "baseTime": 1700000000,
+  "tempModifiers": [
+    {
+      "kind": "node",
+      "initialExpiry": 1700000100,
+      "newExpiry": 1700000060,
+      "modifier": "replace",
+      "expectedExpiry": 1700000100
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 1700000100,
+      "newExpiry": 1700000160,
+      "modifier": "replace",
+      "expectedExpiry": 1700000160
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 1700000100,
+      "newExpiry": 1700000050,
+      "modifier": "accumulate",
+      "expectedExpiry": 1700000150
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 1700000100,
+      "newExpiry": 1700000050,
+      "modifier": "deny",
+      "expectError": true
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 1700000000,
+      "newExpiry": 1700000050,
+      "modifier": "deny",
+      "expectedExpiry": 1700000050
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 0,
+      "newExpiry": 1700000050,
+      "modifier": "accumulate",
+      "expectedExpiry": 0
+    },
+    {
+      "kind": "node",
+      "initialExpiry": 0,
+      "newExpiry": 1700000050,
+      "modifier": "deny",
+      "expectError": true
+    },
+    {
+      "kind": "parent",
+      "initialExpiry": 1700000200,
+      "newExpiry": 1700000100,
+      "modifier": "accumulate",
+      "expectedExpiry": 1700000300
+    },
+    {
+      "kind": "affix",
+      "initialExpiry": 1700000200,
+      "newExpiry": 1700000050,
+      "modifier": "replace",
+      "expectedExpiry": 1700000200
+    },
+    {
+      "kind": "meta",
+      "initialExpiry": 1700000100,
+      "newExpiry": 1700000080,
+      "modifier": "accumulate",
+      "expectedExpiry": 1700000180
+    }
+  ],
+  "trackAndRenameFlow": {
+    "groups": [
+      "default",
+      "member",
+      "helper",
+      "mod"
+    ],
+    "trackName": "staff",
+    "trackGroups": [
+      "member",
+      "helper",
+      "mod"
+    ],
+    "user": {
+      "uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "username": "Trainee",
+      "primaryGroup": "default"
+    },
+    "steps": [
+      {
+        "op": "promote",
+        "track": "staff",
+        "expectFrom": "",
+        "expectTo": "member",
+        "expectPrimary": "member"
+      },
+      {
+        "op": "promote",
+        "track": "staff",
+        "expectFrom": "member",
+        "expectTo": "helper",
+        "expectPrimary": "helper"
+      },
+      {
+        "op": "renameGroup",
+        "old": "helper",
+        "new": "jr_mod",
+        "expectPrimary": "jr_mod",
+        "expectTrackGroups": [
+          "member",
+          "jr_mod",
+          "mod"
+        ]
+      },
+      {
+        "op": "renameTrack",
+        "old": "staff",
+        "new": "moderation"
+      },
+      {
+        "op": "demote",
+        "track": "moderation",
+        "expectFrom": "jr_mod",
+        "expectTo": "member",
+        "expectPrimary": "member"
+      },
+      {
+        "op": "demote",
+        "track": "moderation",
+        "expectError": true
+      }
+    ]
+  },
+  "bulkAndSearch": {
+    "searchQuery": "gate.*",
+    "expectedGroupHitCount": 3,
+    "preview": {
+      "scope": "groups",
+      "action": "update",
+      "field": "server",
+      "value": "lobby",
+      "constraints": [
+        {
+          "field": "permission",
+          "operator": "~~",
+          "pattern": "gate.*"
+        }
+      ],
+      "dryRun": true,
+      "expectGroupsChanged": 1,
+      "expectNodesAffected": 3
+    },
+    "apply": {
+      "scope": "groups",
+      "action": "update",
+      "field": "server",
+      "value": "lobby",
+      "constraints": [
+        {
+          "field": "permission",
+          "operator": "~~",
+          "pattern": "gate.*"
+        }
+      ],
+      "dryRun": false,
+      "expectGroupsChanged": 1,
+      "expectNodesAffected": 3
+    },
+    "delete": {
+      "scope": "groups",
+      "action": "delete",
+      "constraints": [
+        {
+          "field": "server",
+          "operator": "==",
+          "pattern": "lobby"
+        }
+      ],
+      "dryRun": false,
+      "expectGroupsChanged": 1,
+      "expectNodesAffected": 3
+    }
+  }
+}

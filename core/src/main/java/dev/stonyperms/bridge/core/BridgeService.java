@@ -14,8 +14,14 @@ public final class BridgeService {
     private final SnapshotSource source;
     private final SnapshotCache cache;
     private final PermissionResolver resolver;
+    @FunctionalInterface
+    public interface VerboseObserver {
+        void onResolve(UUID uuid, String permission, Decision decision);
+    }
+
     private final boolean failClosed;
     private final boolean useStaleOnError;
+    private volatile VerboseObserver verboseObserver;
 
     public BridgeService(
             SnapshotSource source,
@@ -35,12 +41,20 @@ public final class BridgeService {
         return cache.lookup(key, System.currentTimeMillis());
     }
 
+    public void setVerboseObserver(VerboseObserver verboseObserver) {
+        this.verboseObserver = verboseObserver;
+    }
+
     public Decision resolve(UUID uuid, Map<String, String> contexts, String permission) {
         SnapshotCache.Lookup lookup = lookup(uuid, contexts);
-        if (!usable(lookup)) {
-            return unavailableDecision();
+        Decision decision = usable(lookup)
+                ? resolver.resolve(lookup.snapshot(), permission, contexts)
+                : unavailableDecision();
+        VerboseObserver obs = this.verboseObserver;
+        if (obs != null) {
+            obs.onResolve(uuid, permission, decision);
         }
-        return resolver.resolve(lookup.snapshot(), permission, contexts);
+        return decision;
     }
 
     public Optional<Map<String, Boolean>> materialize(

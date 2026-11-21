@@ -1,4 +1,7 @@
 # StonyPerms bridge (Paper)
+# Mode: "bridge" (backed by Gate HTTP/SSE) or "standalone" (self-contained local JSON store + command /sp).
+mode: "bridge"
+
 api:
   # StonyPerms Gate API. Prefer loopback; for a remote backend use a private
   # network (tailnet/WireGuard) and HTTPS.
@@ -9,13 +12,37 @@ api:
   token: ""
   token-file: "token"
 
-  # Optional write-tier token (required only when write.enabled is true).
+  # Optional write-tier token (required only when write.enabled is true in bridge mode).
   # Resolution order: STONYPERMS_BRIDGE_WRITE_TOKEN env var, api.write-token, api.write-token-file.
   write-token: ""
   write-token-file: ""
 
   connect-timeout-ms: 1500
   request-timeout-ms: 2500
+
+# Standalone mode configuration (used only when mode is "standalone").
+standalone:
+  # Directory containing groups.json, tracks.json, logs.json, and users/<uuid>.json.
+  # Relative paths resolve inside plugins/StonyPermsBridge/.
+  storage-dir: "data"
+  default-group: "default"
+  # Primary group calculation: "stored", "parents-by-weight", or "all-parents-by-weight".
+  primary-group-calculation: "stored"
+  audit-log: true
+  web-base-url: "https://andreisugu.github.io/gate-stonyperms"
+  expiry-cleanup-seconds: 60
+  stack:
+    prefix:
+      enabled: false
+      start-spacer: ""
+      mid-spacer: " "
+      end-spacer: ""
+    suffix:
+      enabled: false
+      start-spacer: ""
+      mid-spacer: " "
+      end-spacer: ""
+    deduplicate: true
 
 # Must match the Gate backend server name used by StonyPerms contexts.
 # Leave empty to send no server context.
@@ -38,12 +65,12 @@ use-stale-on-error: true
 # Apply attachments to operators too. Set false to leave ops fully vanilla.
 apply-to-ops: true
 
-# Cross-server write integration (fail-closed by default).
+# Cross-server write integration (fail-closed by default in bridge mode; defaults to true when omitted in standalone mode).
 write:
   enabled: false
   default-actor: ""
 
-# Live SSE invalidation stream (GET /v1/events).
+# Live SSE invalidation stream (GET /v1/events) in bridge mode.
 sse:
   enabled: true
   reconnect-min-ms: 1000

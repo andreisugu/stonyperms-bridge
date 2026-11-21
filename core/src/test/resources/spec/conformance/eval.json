@@ -1,0 +1,1097 @@
+{
+  "groups": [
+    {
+      "name": "default",
+      "displayName": "&7Member",
+      "weight": 0,
+      "nodes": [
+        {
+          "key": "chat.use",
+          "value": true
+        },
+        {
+          "key": "home.set",
+          "value": false
+        }
+      ],
+      "meta": {
+        "homes": "1",
+        "Shared": "from-default"
+      },
+      "metaEntries": [
+        {
+          "key": "homes",
+          "value": "3",
+          "priority": 10,
+          "contexts": {
+            "server": "creative"
+          }
+        }
+      ],
+      "prefixes": [
+        {
+          "priority": 10,
+          "value": "&7[Member] "
+        }
+      ],
+      "suffixes": [
+        {
+          "priority": 10,
+          "value": " &7[M]"
+        }
+      ]
+    },
+    {
+      "name": "vip",
+      "displayName": "&aVIP",
+      "weight": 50,
+      "parents": [
+        {
+          "group": "default"
+        }
+      ],
+      "nodes": [
+        {
+          "key": "essentials.*",
+          "value": true
+        },
+        {
+          "key": "essentials.god",
+          "value": false
+        },
+        {
+          "key": "arena.join",
+          "value": true,
+          "contexts": {
+            "server": "smp"
+          }
+        },
+        {
+          "key": "arena.join",
+          "value": false,
+          "contexts": {
+            "server": "smp",
+            "world": "spawn"
+          }
+        },
+        {
+          "key": "r=plugin\\.kit\\.(starter|vip|hero)",
+          "value": true
+        },
+        {
+          "key": "homes.{1-5}",
+          "value": true
+        },
+        {
+          "key": "cosmetic.{hat,trail}",
+          "value": true
+        },
+        {
+          "key": "perk.(a|b).use",
+          "value": true
+        },
+        {
+          "key": "redos.test",
+          "value": false
+        },
+        {
+          "key": "r=(a+)+b",
+          "value": true
+        },
+        {
+          "key": "cosmetic.{fly,glow}.*",
+          "value": true
+        }
+      ],
+      "meta": {
+        "homes": "5"
+      },
+      "metaEntries": [
+        {
+          "key": "color",
+          "value": "aqua",
+          "priority": 5
+        },
+        {
+          "key": "color",
+          "value": "gold",
+          "priority": 10
+        },
+        {
+          "key": "color",
+          "value": "dark_purple",
+          "priority": 1,
+          "contexts": {
+            "server": "creative"
+          }
+        },
+        {
+          "key": "temp_meta",
+          "value": "active",
+          "expiry": 1700000600
+        },
+        {
+          "key": "temp_meta_exp",
+          "value": "expired",
+          "expiry": 1700000000
+        }
+      ],
+      "prefixes": [
+        {
+          "priority": 50,
+          "value": "&a[VIP] "
+        },
+        {
+          "priority": 50,
+          "value": "&e[VIP-Creative] ",
+          "contexts": {
+            "server": "creative"
+          }
+        }
+      ],
+      "suffixes": [
+        {
+          "priority": 50,
+          "value": " &a*"
+        }
+      ]
+    },
+    {
+      "name": "alpha",
+      "displayName": "Alpha",
+      "weight": 50,
+      "nodes": [
+        {
+          "key": "tie.check",
+          "value": true
+        },
+        {
+          "key": "alpha.only",
+          "value": true
+        }
+      ],
+      "prefixes": [
+        {
+          "priority": 60,
+          "value": "[Alpha]"
+        }
+      ]
+    },
+    {
+      "name": "zeta",
+      "displayName": "Zeta",
+      "weight": 50,
+      "nodes": [
+        {
+          "key": "tie.check",
+          "value": false
+        },
+        {
+          "key": "zeta.only",
+          "value": true
+        }
+      ],
+      "prefixes": [
+        {
+          "priority": 60,
+          "value": "[Zeta]"
+        }
+      ]
+    },
+    {
+      "name": "cyc_a",
+      "weight": 20,
+      "parents": [
+        {
+          "group": "cyc_b"
+        }
+      ],
+      "nodes": [
+        {
+          "key": "cyc.perm",
+          "value": true
+        }
+      ]
+    },
+    {
+      "name": "cyc_b",
+      "weight": 10,
+      "parents": [
+        {
+          "group": "cyc_a"
+        }
+      ],
+      "nodes": [
+        {
+          "key": "cyc.perm",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "high_wild",
+      "weight": 90,
+      "nodes": [
+        {
+          "key": "shop.*",
+          "value": false
+        }
+      ]
+    },
+    {
+      "name": "low_exact",
+      "weight": 10,
+      "nodes": [
+        {
+          "key": "shop.buy",
+          "value": true
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "exact_and_user_wildcard_override_group",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {},
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "essentials.god",
+          "expected": "true",
+          "source": "user:direct"
+        },
+        {
+          "permission": "essentials.fly",
+          "expected": "true",
+          "source": "group:vip:wildcard (essentials.*)"
+        },
+        {
+          "permission": "custom.foo",
+          "expected": "true",
+          "source": "user:direct"
+        },
+        {
+          "permission": "tie.same",
+          "expected": "false",
+          "source": "user:direct"
+        },
+        {
+          "permission": "expired.perm",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "active.temp",
+          "expected": "true",
+          "source": "user:direct"
+        },
+        {
+          "permission": "chat.use",
+          "expected": "true",
+          "source": "group:default"
+        },
+        {
+          "permission": "unknown.node",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        }
+      ],
+      "expectedPrimaryGroup": "vip",
+      "expectedPrefix": "&a[VIP] ",
+      "expectedSuffix": " &a*",
+      "expectedMeta": {
+        "bio": "hello",
+        "nickname": "Ally",
+        "color": "gold",
+        "temp_meta": "active",
+        "homes": "5",
+        "Shared": "from-default"
+      },
+      "metaQueries": [
+        {
+          "key": "shared",
+          "found": true,
+          "value": "from-default"
+        },
+        {
+          "key": "temp_meta_exp",
+          "found": false,
+          "value": ""
+        },
+        {
+          "key": "temp_user_meta",
+          "found": false,
+          "value": ""
+        }
+      ]
+    },
+    {
+      "name": "contexts_specificity_and_expiry_boundary",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {
+        "server": "SMP",
+        "world": "spawn"
+      },
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "arena.join",
+          "expected": "false",
+          "source": "group:vip"
+        },
+        {
+          "permission": "homes.3",
+          "expected": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "homes.6",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "cosmetic.trail",
+          "expected": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "perk.b.use",
+          "expected": "true",
+          "source": "group:vip"
+        },
+        {
+          "permission": "cosmetic.glow.blue",
+          "expected": "true",
+          "source": "group:vip:wildcard (cosmetic.{fly,glow}.*)"
+        }
+      ]
+    },
+    {
+      "name": "re2_regex_and_redos_resistance",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {},
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "plugin.kit.vip",
+          "expected": "true",
+          "source": "group:vip:wildcard (r=plugin\\.kit\\.(starter|vip|hero))"
+        },
+        {
+          "permission": "plugin.kit.VIP",
+          "expected": "true",
+          "source": "group:vip:wildcard (r=plugin\\.kit\\.(starter|vip|hero))"
+        },
+        {
+          "permission": "plugin.kit.vip.extra",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        },
+        {
+          "permission": "aaaaaaaaaaaaaaaaaaaaaaaaaac",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        }
+      ]
+    },
+    {
+      "name": "creative_context_affix_and_meta",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {
+        "server": "creative",
+        "world": "fancy"
+      },
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "essentials.fly",
+          "expected": "true",
+          "source": "group:vip:wildcard (essentials.*)"
+        }
+      ],
+      "expectedPrefix": "&e[VIP-Creative] ",
+      "expectedSuffix": " &d[Custom]",
+      "expectedMeta": {
+        "bio": "hello",
+        "nickname": "Ally",
+        "color": "dark_purple",
+        "temp_meta": "active",
+        "homes": "5",
+        "Shared": "from-default"
+      }
+    },
+    {
+      "name": "equal_weight_groups_alpha_beats_zeta",
+      "user": {
+        "uuid": "22222222-2222-2222-2222-222222222222",
+        "username": "Bob",
+        "primaryGroup": "default",
+        "parents": [
+          {
+            "group": "zeta"
+          },
+          {
+            "group": "alpha"
+          }
+        ]
+      },
+      "contexts": {},
+      "now": 1700000000,
+      "primaryGroupCalculation": "parents-by-weight",
+      "expectedPrimaryGroup": "alpha",
+      "expectedPrefix": "[Alpha]",
+      "checks": [
+        {
+          "permission": "tie.check",
+          "expected": "true",
+          "source": "group:alpha"
+        },
+        {
+          "permission": "zeta.only",
+          "expected": "true",
+          "source": "group:zeta"
+        }
+      ]
+    },
+    {
+      "name": "all_parents_by_weight_transitive_primary",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {
+        "world": "market"
+      },
+      "now": 1700000000,
+      "primaryGroupCalculation": "all-parents-by-weight",
+      "expectedPrimaryGroup": "high_wild",
+      "checks": [
+        {
+          "permission": "shop.sell",
+          "expected": "false",
+          "source": "group:high_wild:wildcard (shop.*)"
+        },
+        {
+          "permission": "shop.buy",
+          "expected": "false",
+          "source": "group:high_wild:wildcard (shop.*)"
+        }
+      ]
+    },
+    {
+      "name": "higher_weight_wildcard_beats_lower_weight_exact_and_user_wildcard_beats_group",
+      "user": {
+        "uuid": "33333333-3333-3333-3333-333333333333",
+        "username": "Charlie",
+        "primaryGroup": "high_wild",
+        "parents": [
+          {
+            "group": "high_wild"
+          },
+          {
+            "group": "low_exact"
+          }
+        ],
+        "nodes": [
+          {
+            "key": "r=shop\\.b.*",
+            "value": true
+          },
+          {
+            "key": "invalid.b*",
+            "value": true
+          }
+        ]
+      },
+      "contexts": {},
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "shop.buy",
+          "expected": "true",
+          "source": "user:wildcard (r=shop\\.b.*)"
+        },
+        {
+          "permission": "shop.sell",
+          "expected": "false",
+          "source": "group:high_wild:wildcard (shop.*)"
+        },
+        {
+          "permission": "invalid.bar",
+          "expected": "undefined",
+          "source": "default (undefined)"
+        }
+      ]
+    },
+    {
+      "name": "cycle_safety_and_group_hierarchy_check",
+      "user": {
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "username": "Alice",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "cyc_a",
+            "contexts": {
+              "server": "cycle"
+            }
+          },
+          {
+            "group": "high_wild",
+            "expiry": 1700000010,
+            "contexts": {
+              "world": "market"
+            }
+          },
+          {
+            "group": "low_exact",
+            "expiry": 1700000000,
+            "contexts": {
+              "world": "market"
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "key": "essentials.god",
+            "value": true
+          },
+          {
+            "key": "custom.{foo,bar}",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": true
+          },
+          {
+            "key": "tie.same",
+            "value": false
+          },
+          {
+            "key": "expired.perm",
+            "value": true,
+            "expiry": 1700000000
+          },
+          {
+            "key": "active.temp",
+            "value": true,
+            "expiry": 1700000001
+          }
+        ],
+        "meta": {
+          "bio": "hello"
+        },
+        "metaEntries": [
+          {
+            "key": "nickname",
+            "value": "Ally",
+            "priority": 10
+          },
+          {
+            "key": "temp_user_meta",
+            "value": "dead",
+            "expiry": 1699999995
+          }
+        ],
+        "prefixes": [],
+        "suffixes": [
+          {
+            "priority": 20,
+            "value": " &d[Custom]",
+            "contexts": {
+              "world": "fancy"
+            }
+          }
+        ]
+      },
+      "contexts": {
+        "server": "cycle"
+      },
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "cyc.perm",
+          "expected": "true",
+          "source": "group:cyc_a"
+        }
+      ],
+      "groupChecks": [
+        {
+          "group": "cyc_b",
+          "permission": "cyc.perm",
+          "expected": "true",
+          "source": "group:cyc_a"
+        }
+      ]
+    },
+    {
+      "name": "stacked_affixes_with_dedup_and_without",
+      "user": {
+        "uuid": "44444444-4444-4444-4444-444444444444",
+        "username": "Stacker",
+        "primaryGroup": "vip",
+        "parents": [
+          {
+            "group": "vip"
+          },
+          {
+            "group": "default"
+          }
+        ],
+        "prefixes": [
+          {
+            "priority": 200,
+            "value": "&a[VIP] "
+          },
+          {
+            "priority": 300,
+            "value": "&b[User]"
+          }
+        ]
+      },
+      "contexts": {},
+      "now": 1700000000,
+      "stack": {
+        "prefixEnabled": true,
+        "prefixStartSpacer": "[",
+        "prefixMidSpacer": "|",
+        "prefixEndSpacer": "]",
+        "suffixEnabled": true,
+        "suffixStartSpacer": "",
+        "suffixMidSpacer": " ",
+        "suffixEndSpacer": "",
+        "deduplicate": true
+      },
+      "expectedPrefix": "[&b[User]|&a[VIP] |&7[Member] ]",
+      "expectedSuffix": " &a*  &7[M]"
+    },
+    {
+      "name": "nil_user_evaluates_undefined",
+      "user": null,
+      "contexts": {},
+      "now": 1700000000,
+      "checks": [
+        {
+          "permission": "*",
+          "expected": "undefined",
+          "source": "none (nil user)"
+        }
+      ],
+      "expectedPrimaryGroup": "default",
+      "expectedPrefix": "",
+      "expectedSuffix": ""
+    }
+  ]
+}

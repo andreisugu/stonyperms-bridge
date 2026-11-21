@@ -36,6 +36,35 @@ The proxy-side HTTP API lives in [`andreisugu/gate-stonyperms`](https://github.c
 
 ---
 
+
+## 🏠 Standalone Mode
+
+Need a self-contained permission plugin/mod without running Gate or an HTTP backend? Set `mode: "standalone"` (Paper) or `"mode": "standalone"` (Fabric) to run `stonyperms-bridge` as an authoritative local permissions manager backed by the exact same JSON flat-file format and evaluation engine as [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms):
+
+- **Shared Go ↔ Java parity:** Evaluation rules, RE2 regex matching (`r=...`), shorthand expansion (`{a,b}`, `{1-5}`), stacking affixes, `sp1_` portable web codes (`StonyPermsWeb` `/editor`, `/tree`, `/verbose`), audit logs, and storage files (`groups.json`, `tracks.json`, `logs.json`, `users/<uuid>.json`) match the canonical spec verified in CI (`core/src/test/resources/spec/`).
+- **Zero-conversion portability:** Copy your `standalone.storage-dir` directory directly into Gate's `gate-stonyperms` `data/` directory (or vice versa) with zero migration needed.
+- **Conditional `/sp` commands:** In `standalone` mode, Paper and Fabric register `/sp` and `/stonyperms` alongside `/spb` (and accept `stonyperms.admin` / `stonyperms.*` in addition to `stonyperms.bridge.*`). In `bridge` mode, `/sp` is never registered so it never collides with Gate's `/sp` proxy command.
+
+**Paper (`plugins/StonyPermsBridge/config.yml`):**
+```yaml
+mode: "standalone"
+standalone:
+  storage-dir: "data"
+  primary-group-calculation: "stored"
+```
+
+**Fabric (`config/stonyperms-bridge.json`):**
+```json
+{
+  "mode": "standalone",
+  "standalone": {
+    "storageDir": "stonyperms/data",
+    "primaryGroupCalculation": "stored"
+  }
+}
+```
+
+---
 ## 🏗️ Architecture (v0.2)
 
 ```text

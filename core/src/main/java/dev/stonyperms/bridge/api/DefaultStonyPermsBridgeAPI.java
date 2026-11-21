@@ -22,6 +22,7 @@ import dev.stonyperms.bridge.core.MutationResult;
 import dev.stonyperms.bridge.core.ParentMode;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
+import dev.stonyperms.bridge.core.StonyPermsBackend;
 import dev.stonyperms.bridge.core.StonyPermsClient;
 import dev.stonyperms.bridge.core.TrackActionResult;
 import dev.stonyperms.bridge.core.TrackRecord;
@@ -49,7 +50,7 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
     }
 
     private final BridgeService service;
-    private final StonyPermsClient client;
+    private final StonyPermsBackend client;
     private final Executor ioExecutor;
     private final boolean writeEnabled;
     private final String defaultActor;
@@ -61,7 +62,7 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
 
     public DefaultStonyPermsBridgeAPI(
             BridgeService service,
-            StonyPermsClient client,
+            StonyPermsBackend client,
             Executor ioExecutor,
             boolean writeEnabled,
             String defaultActor,
@@ -257,8 +258,49 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
     // -------------------------------------------------------------------------
 
     @Override
+    public boolean isStandalone() {
+        return client.isStandalone();
+    }
+
+    @Override
     public boolean isWriteEnabled() {
         return writeEnabled && client.hasWriteToken();
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> renameGroup(
+            String oldName, String newName, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.renameGroup(oldName, newName, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> renameTrack(
+            String oldName, String newName, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.renameTrack(oldName, newName, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<Void> startVerboseRecording(String actor, String targetFilter, String queryFilter) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> {
+            client.startVerboseRecording(effectiveActor(actor), targetFilter, queryFilter);
+            return null;
+        });
+    }
+
+    @Override
+    public CompletableFuture<Integer> stopVerboseRecording() {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(client::stopVerboseRecording);
+    }
+
+    @Override
+    public boolean isVerboseRecording() {
+        return client.isVerboseRecording();
     }
 
     @Override

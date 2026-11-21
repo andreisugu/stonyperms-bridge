@@ -1,6 +1,7 @@
 package dev.stonyperms.bridge.paper;
 
 import dev.stonyperms.bridge.core.DisplayFormat;
+import dev.stonyperms.bridge.core.local.StandaloneConfig;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.nio.file.Path;
 import java.util.Locale;
 
 public record PaperBridgeConfig(
+        Mode mode,
         URI apiUrl,
         String token,
         String writeToken,
@@ -30,11 +32,17 @@ public record PaperBridgeConfig(
         boolean chatEnabled,
         String chatFormat,
         boolean tablistEnabled,
-        boolean debug) {
+        boolean debug,
+        StandaloneConfig standalone) {
+
+    public enum Mode {
+        BRIDGE,
+        STANDALONE
+    }
 
     public static final int MIN_TOKEN_LENGTH = 16;
 
-    /** Backward-compatible 9-arg constructor (defaults to read-only with SSE, integrations & display enabled). */
+    /** Backward-compatible 9-arg constructor (defaults to read-only bridge mode). */
     public PaperBridgeConfig(
             URI apiUrl,
             String token,
@@ -45,9 +53,9 @@ public record PaperBridgeConfig(
             boolean useStaleOnError,
             boolean applyToOps,
             boolean debug) {
-        this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                applyToOps, false, "", true, 1000L, 30_000L, true, true,
-                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug);
+        this(Mode.BRIDGE, apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, applyToOps, false, "", true, 1000L, 30_000L, true, true,
+                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug, null);
     }
 
     /** Backward-compatible 17-arg constructor. */
@@ -69,10 +77,42 @@ public record PaperBridgeConfig(
             boolean integrationsPlaceholderApi,
             boolean integrationsVault,
             boolean debug) {
-        this(apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
-                applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs, sseReconnectMaxMs,
-                integrationsPlaceholderApi, integrationsVault,
-                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug);
+        this(Mode.BRIDGE, apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs,
+                sseReconnectMaxMs, integrationsPlaceholderApi, integrationsVault,
+                true, DisplayFormat.DEFAULT_CHAT_FORMAT, true, debug, null);
+    }
+
+    /** Backward-compatible 20-arg constructor. */
+    public PaperBridgeConfig(
+            URI apiUrl,
+            String token,
+            String writeToken,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean applyToOps,
+            boolean writeEnabled,
+            String defaultActor,
+            boolean sseEnabled,
+            long sseReconnectMinMs,
+            long sseReconnectMaxMs,
+            boolean integrationsPlaceholderApi,
+            boolean integrationsVault,
+            boolean chatEnabled,
+            String chatFormat,
+            boolean tablistEnabled,
+            boolean debug) {
+        this(Mode.BRIDGE, apiUrl, token, writeToken, serverName, refreshSeconds, staleGraceSeconds, failClosed,
+                useStaleOnError, applyToOps, writeEnabled, defaultActor, sseEnabled, sseReconnectMinMs,
+                sseReconnectMaxMs, integrationsPlaceholderApi, integrationsVault,
+                chatEnabled, chatFormat, tablistEnabled, debug, null);
+    }
+
+    public boolean isStandalone() {
+        return mode == Mode.STANDALONE;
     }
 
     public static PaperBridgeConfig from(FileConfiguration config, Path dataFolder) throws PaperConfigException {
@@ -91,47 +131,94 @@ public record PaperBridgeConfig(
     static PaperBridgeConfig from(
             FileConfiguration config, Path dataFolder, String envToken, String envWriteToken)
             throws PaperConfigException {
-        String configuredUrl = config.getString("api.url", "http://127.0.0.1:8737");
-        String url = configuredUrl == null ? "http://127.0.0.1:8737" : configuredUrl.trim();
-        URI apiUrl;
-        try {
-            apiUrl = URI.create(url);
-        } catch (IllegalArgumentException error) {
-            throw new PaperConfigException("api.url is not a valid URI", error);
-        }
-        String scheme = apiUrl.getScheme() == null ? "" : apiUrl.getScheme().toLowerCase(Locale.ROOT);
-        if (!scheme.equals("http") && !scheme.equals("https")) {
-            throw new PaperConfigException("api.url must use http or https");
-        }
-        if (apiUrl.getHost() == null) {
-            throw new PaperConfigException("api.url must include a host");
+        String rawMode = safeTrim(config.getString("mode", "bridge")).toLowerCase(Locale.ROOT);
+        Mode mode;
+        if (rawMode.isEmpty() || rawMode.equals("bridge")) {
+            mode = Mode.BRIDGE;
+        } else if (rawMode.equals("standalone")) {
+            mode = Mode.STANDALONE;
+        } else {
+            throw new PaperConfigException("mode must be 'bridge' or 'standalone', got: " + rawMode);
         }
 
-        String token = resolveRequiredToken(
-                config.getString("api.token", ""),
-                config.getString("api.token-file", ""),
-                dataFolder,
-                envToken,
-                "STONYPERMS_BRIDGE_TOKEN, api.token, or api.token-file");
-        if (token.length() < MIN_TOKEN_LENGTH) {
-            throw new PaperConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
-        }
+        URI apiUrl = null;
+        String token = "";
+        String writeToken = "";
+        boolean writeEnabled;
+        boolean sseEnabled;
+        StandaloneConfig standaloneCfg = null;
 
-        boolean writeEnabled = config.getBoolean("write.enabled", false);
-        String writeToken = resolveOptionalToken(
-                config.getString("api.write-token", ""),
-                config.getString("api.write-token-file", ""),
-                dataFolder,
-                envWriteToken);
-        if (writeEnabled) {
-            if (writeToken.isBlank()) {
-                throw new PaperConfigException(
-                        "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.write-token, or api.write-token-file");
+        if (mode == Mode.STANDALONE) {
+            writeEnabled = config.getBoolean("write.enabled", true);
+            sseEnabled = false;
+            String rawStorageDir = safeTrim(config.getString("standalone.storage-dir", "data"));
+            if (rawStorageDir.isEmpty()) {
+                rawStorageDir = "data";
             }
-            if (writeToken.length() < MIN_TOKEN_LENGTH) {
-                throw new PaperConfigException(
-                        "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+            Path storagePath = Path.of(rawStorageDir);
+            if (!storagePath.isAbsolute()) {
+                storagePath = dataFolder.resolve(storagePath);
             }
+            String defaultGroup = safeTrim(config.getString("standalone.default-group", "default"));
+            String primaryCalc = safeTrim(config.getString("standalone.primary-group-calculation", "stored"));
+            boolean auditLog = config.getBoolean("standalone.audit-log", true);
+            String webBaseUrl = safeTrim(config.getString("standalone.web-base-url", StandaloneConfig.DEFAULT_WEB_URL));
+            long expiryCleanupSeconds = Math.max(5L, config.getLong("standalone.expiry-cleanup-seconds", 60L));
+            StandaloneConfig.StackConfig stack = new StandaloneConfig.StackConfig(
+                    config.getBoolean("standalone.stack.prefix.enabled", false),
+                    config.getString("standalone.stack.prefix.start-spacer", ""),
+                    config.getString("standalone.stack.prefix.mid-spacer", " "),
+                    config.getString("standalone.stack.prefix.end-spacer", ""),
+                    config.getBoolean("standalone.stack.suffix.enabled", false),
+                    config.getString("standalone.stack.suffix.start-spacer", ""),
+                    config.getString("standalone.stack.suffix.mid-spacer", " "),
+                    config.getString("standalone.stack.suffix.end-spacer", ""),
+                    config.getBoolean("standalone.stack.deduplicate", true));
+            standaloneCfg = new StandaloneConfig(
+                    storagePath, defaultGroup, primaryCalc, stack, auditLog, webBaseUrl, expiryCleanupSeconds);
+        } else {
+            String configuredUrl = config.getString("api.url", "http://127.0.0.1:8737");
+            String url = configuredUrl == null ? "http://127.0.0.1:8737" : configuredUrl.trim();
+            try {
+                apiUrl = URI.create(url);
+            } catch (IllegalArgumentException error) {
+                throw new PaperConfigException("api.url is not a valid URI", error);
+            }
+            String scheme = apiUrl.getScheme() == null ? "" : apiUrl.getScheme().toLowerCase(Locale.ROOT);
+            if (!scheme.equals("http") && !scheme.equals("https")) {
+                throw new PaperConfigException("api.url must use http or https");
+            }
+            if (apiUrl.getHost() == null) {
+                throw new PaperConfigException("api.url must include a host");
+            }
+
+            token = resolveRequiredToken(
+                    config.getString("api.token", ""),
+                    config.getString("api.token-file", ""),
+                    dataFolder,
+                    envToken,
+                    "STONYPERMS_BRIDGE_TOKEN, api.token, or api.token-file");
+            if (token.length() < MIN_TOKEN_LENGTH) {
+                throw new PaperConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
+            }
+
+            writeEnabled = config.getBoolean("write.enabled", false);
+            writeToken = resolveOptionalToken(
+                    config.getString("api.write-token", ""),
+                    config.getString("api.write-token-file", ""),
+                    dataFolder,
+                    envWriteToken);
+            if (writeEnabled) {
+                if (writeToken.isBlank()) {
+                    throw new PaperConfigException(
+                            "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.write-token, or api.write-token-file");
+                }
+                if (writeToken.length() < MIN_TOKEN_LENGTH) {
+                    throw new PaperConfigException(
+                            "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+                }
+            }
+            sseEnabled = config.getBoolean("sse.enabled", true);
         }
 
         String serverName = safeTrim(config.getString("server-name", ""));
@@ -142,6 +229,7 @@ public record PaperBridgeConfig(
         long sseMax = Math.max(sseMin, config.getLong("sse.reconnect-max-ms", 30_000L));
 
         return new PaperBridgeConfig(
+                mode,
                 apiUrl,
                 token,
                 writeToken,
@@ -153,7 +241,7 @@ public record PaperBridgeConfig(
                 config.getBoolean("apply-to-ops", true),
                 writeEnabled,
                 defaultActor,
-                config.getBoolean("sse.enabled", true),
+                sseEnabled,
                 sseMin,
                 sseMax,
                 config.getBoolean("integrations.placeholderapi", true),
@@ -161,7 +249,8 @@ public record PaperBridgeConfig(
                 config.getBoolean("chat.enabled", true),
                 DisplayFormat.normalizeChatFormat(config.getString("chat.format", DisplayFormat.DEFAULT_CHAT_FORMAT)),
                 config.getBoolean("tablist.enabled", true),
-                config.getBoolean("debug", false));
+                config.getBoolean("debug", false),
+                standaloneCfg);
     }
 
     public String effectiveDefaultActor() {
@@ -209,6 +298,9 @@ public record PaperBridgeConfig(
     }
 
     public boolean isRemotePlainHttp() {
+        if (isStandalone() || apiUrl == null) {
+            return false;
+        }
         String scheme = apiUrl.getScheme();
         if (scheme == null || !scheme.equalsIgnoreCase("http")) {
             return false;

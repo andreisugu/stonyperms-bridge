@@ -79,7 +79,7 @@ public final class BridgeCommandHandler {
 
         String root = args.getFirst().toLowerCase(Locale.ROOT);
         switch (root) {
-            case "status" -> {
+            case "status", "info" -> {
                 if (!requireAdmin(sender)) return true;
                 for (String line : platform.statusSummary().split("\n")) {
                     platform.sendMessage(sender, line);
@@ -564,7 +564,7 @@ public final class BridgeCommandHandler {
 
     private void handleGroup(Object sender, String label, List<String> args) {
         if (args.size() < 2) {
-            platform.sendMessage(sender, "Usage: /" + label + " group <list|<name> <info|members|create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix>>");
+            platform.sendMessage(sender, "Usage: /" + label + " group <list|<name> <info|members|create|delete|rename|setweight|setdisplayname|permission|parent|meta|prefix|suffix>>");
             return;
         }
         String first = args.get(1);
@@ -641,6 +641,15 @@ public final class BridgeCommandHandler {
                 }
                 case "delete" -> api.deleteGroup(group, actor, null)
                         .whenComplete((res, err) -> reportMutation(sender, "Deleted group '" + group + "'", res, err));
+                case "rename" -> {
+                    if (args.size() < 4) {
+                        platform.sendMessage(sender, "Usage: /" + label + " group " + group + " rename <newName>");
+                        return;
+                    }
+                    String newName = args.get(3);
+                    api.renameGroup(group, newName, actor, null)
+                            .whenComplete((res, err) -> reportMutation(sender, "Renamed group '" + group + "' to '" + newName + "'", res, err));
+                }
                 case "setweight" -> {
                     if (args.size() < 4) {
                         platform.sendMessage(sender, "Usage: /" + label + " group " + group + " setweight <weight>");
@@ -663,7 +672,7 @@ public final class BridgeCommandHandler {
                 case "editor", "ed" -> handleEditor(sender, label, "group", group, "");
                 case "prefix", "suffix" -> handleGroupAffix(sender, label, group, action.equals("prefix"), actor, args);
                 default -> platform.sendMessage(sender,
-                        "Unknown group action '" + action + "'. Expected info|members|create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix");
+                        "Unknown group action '" + action + "'. Expected info|members|create|delete|rename|setweight|setdisplayname|permission|parent|meta|prefix|suffix");
             }
         } catch (NumberFormatException error) {
             platform.sendMessage(sender, "Expected an integer argument");
@@ -1065,7 +1074,7 @@ public final class BridgeCommandHandler {
 
     private void handleTrack(Object sender, String label, List<String> args) {
         if (args.size() < 2) {
-            platform.sendMessage(sender, "Usage: /" + label + " track <list|<name> <info|create|delete|set|append|remove|clone>>");
+            platform.sendMessage(sender, "Usage: /" + label + " track <list|<name> <info|create|delete|rename|set|append|remove|clone>>");
             return;
         }
         String first = args.get(1);
@@ -1110,6 +1119,15 @@ public final class BridgeCommandHandler {
             }
             case "delete" -> api.deleteTrack(track, actor, null)
                     .whenComplete((res, err) -> reportMutation(sender, "Deleted track '" + track + "'", res, err));
+            case "rename" -> {
+                if (args.size() < 4) {
+                    platform.sendMessage(sender, "Usage: /" + label + " track " + track + " rename <newName>");
+                    return;
+                }
+                String newName = args.get(3);
+                api.renameTrack(track, newName, actor, null)
+                        .whenComplete((res, err) -> reportMutation(sender, "Renamed track '" + track + "' to '" + newName + "'", res, err));
+            }
             case "set" -> {
                 if (args.size() < 4) {
                     platform.sendMessage(sender, "Usage: /" + label + " track " + track + " set <group1> [group2 ...]");
@@ -1241,7 +1259,7 @@ public final class BridgeCommandHandler {
             String prefix = args.isEmpty() ? "" : args.getFirst();
             List<String> top = new ArrayList<>();
             if (canAdmin) {
-                top.addAll(List.of("status", "refresh", "check", "search", "reload", "user", "group", "track"));
+                top.addAll(List.of("status", "info", "refresh", "check", "search", "reload", "user", "group", "track"));
             } else {
                 top.addAll(List.of("user", "group", "track"));
             }
@@ -1296,7 +1314,7 @@ public final class BridgeCommandHandler {
             if (idx == 2 && !args.get(1).equalsIgnoreCase("list")) {
                 List<String> subs = new ArrayList<>();
                 if (canAdmin) subs.addAll(List.of("info", "members", "permission", "parent"));
-                if (canWrite) subs.addAll(List.of("create", "delete", "setweight", "setdisplayname", "meta", "prefix", "suffix", "editor"));
+                if (canWrite) subs.addAll(List.of("create", "delete", "rename", "setweight", "setdisplayname", "meta", "prefix", "suffix", "editor"));
                 return filter(subs, current);
             }
             if (idx == 3) {
@@ -1313,7 +1331,7 @@ public final class BridgeCommandHandler {
             if (idx == 2 && !args.get(1).equalsIgnoreCase("list")) {
                 List<String> subs = new ArrayList<>();
                 if (canAdmin) subs.add("info");
-                if (canWrite) subs.addAll(List.of("create", "delete", "set", "append", "remove", "clone"));
+                if (canWrite) subs.addAll(List.of("create", "delete", "rename", "set", "append", "remove", "clone"));
                 return filter(subs, current);
             }
         }
@@ -1326,7 +1344,10 @@ public final class BridgeCommandHandler {
             return filter(List.of(".", "bukkit", "minecraft", "stonyperms", "gate"), current);
         }
         if (root.equals("verbose") && canWrite && idx == 1) {
-            return filter(List.of("paste", "upload"), current);
+            List<String> opts = api.isStandalone()
+                    ? List.of("record", "stop", "paste", "upload")
+                    : List.of("paste", "upload");
+            return filter(opts, current);
         }
         return List.of();
     }
@@ -1642,11 +1663,54 @@ public final class BridgeCommandHandler {
 
     private void handleVerbose(Object sender, String label, List<String> args) {
         String sub = args.size() >= 2 ? args.get(1).toLowerCase(Locale.ROOT) : "paste";
+        String actor = platform.actorName(sender);
+        if (api.isStandalone()) {
+            if (sub.equals("record") || sub.equals("on") || sub.equals("start")) {
+                String targetFilter = null;
+                String queryFilter = null;
+                if (args.size() >= 4) {
+                    targetFilter = args.get(2);
+                    queryFilter = joinArgs(args, 3);
+                } else if (args.size() == 3) {
+                    String single = args.get(2);
+                    if (single.indexOf('.') >= 0 || single.indexOf('*') >= 0
+                            || single.indexOf('{') >= 0 || single.startsWith("r=")) {
+                        queryFilter = single;
+                    } else {
+                        targetFilter = single;
+                    }
+                }
+                String tf = targetFilter;
+                String qf = queryFilter;
+                api.startVerboseRecording(actor, tf, qf).whenComplete((v, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Failed to start verbose recording: " + formatError(err));
+                    } else {
+                        platform.sendMessage(sender, "Started verbose check recording"
+                                + (tf != null ? " for " + tf : "")
+                                + (qf != null ? " (filter=" + qf + ")" : "") + ".");
+                    }
+                });
+                return;
+            }
+            if (sub.equals("stop") || sub.equals("off")) {
+                api.stopVerboseRecording().whenComplete((count, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Failed to stop verbose recording: " + formatError(err));
+                    } else {
+                        platform.sendMessage(sender, "Stopped verbose recording (" + count
+                                + " checks captured). Run /" + label + " verbose paste to inspect online.");
+                    }
+                });
+                return;
+            }
+        }
         if (!sub.equals("paste") && !sub.equals("upload")) {
-            platform.sendMessage(sender, "Usage: /" + label + " verbose paste (start Gate verbose capture via /sp verbose record on the proxy)");
+            platform.sendMessage(sender, api.isStandalone()
+                    ? "Usage: /" + label + " verbose <record [player] [filter]|stop|paste>"
+                    : "Usage: /" + label + " verbose paste (start Gate verbose capture via /sp verbose record on the proxy)");
             return;
         }
-        String actor = platform.actorName(sender);
         api.createVerboseSession(actor, label).whenComplete((VerboseSessionResult res, Throwable err) -> {
             if (err != null) {
                 platform.sendMessage(sender, "Failed to upload verbose log: " + formatError(err));
@@ -1661,7 +1725,7 @@ public final class BridgeCommandHandler {
 
     private void sendUsage(Object sender, String label) {
         platform.sendMessage(sender,
-                "Usage: /" + label + " <status|refresh|check|search|reload|sync|networksync|bulkupdate|user|group|track|log|editor|applyedits|tree|verbose>");
+                "Usage: /" + label + " <status|info|refresh|check|search|reload|sync|networksync|bulkupdate|user|group|track|log|editor|applyedits|tree|verbose>");
     }
 
     private static boolean isModifierToken(String tok) {

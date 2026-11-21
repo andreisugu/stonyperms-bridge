@@ -100,9 +100,35 @@ public interface StonyPermsBridgeAPI {
     // Cross-server writes & admin (fail closed unless isWriteEnabled() is true)
     // -------------------------------------------------------------------------
 
+    default boolean isStandalone() {
+        return false;
+    }
+
     boolean isWriteEnabled();
 
     String defaultActor();
+
+    default CompletableFuture<MutationResult> renameGroup(
+            String oldName, String newName, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("renameGroup not implemented"));
+    }
+
+    default CompletableFuture<MutationResult> renameTrack(
+            String oldName, String newName, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("renameTrack not implemented"));
+    }
+
+    default CompletableFuture<Void> startVerboseRecording(String actor, String targetFilter, String queryFilter) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("startVerboseRecording not implemented"));
+    }
+
+    default CompletableFuture<Integer> stopVerboseRecording() {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("stopVerboseRecording not implemented"));
+    }
+
+    default boolean isVerboseRecording() {
+        return false;
+    }
 
     CompletableFuture<MutationResult> ensureUser(
             UUID uuid, String username, String primaryGroup, boolean createOffline, String actor, String idempotencyKey);
