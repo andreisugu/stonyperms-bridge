@@ -206,7 +206,11 @@ public final class StonyPermsBridgeMod implements ModInitializer {
                         .then(sharedSubtree("user", false))
                         .then(sharedSubtree("group", false))
                         .then(sharedSubtree("track", false))
-                        .then(sharedSubtree("log", true))));
+                        .then(sharedSubtree("log", true))
+                        .then(sharedSubtree("editor", true))
+                        .then(sharedSubtree("applyedits", true))
+                        .then(sharedSubtree("tree", true))
+                        .then(sharedSubtree("verbose", true))));
     }
 
     private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> sharedSubtree(
@@ -427,6 +431,23 @@ public final class StonyPermsBridgeMod implements ModInitializer {
         @Override
         public java.util.Map<String, String> defaultContexts() {
             return runtime.defaultContexts();
+        }
+
+        @Override
+        public java.util.Map<String, List<String>> collectExtraContexts() {
+            java.util.Map<String, List<String>> out = new java.util.LinkedHashMap<>();
+            java.util.Map<String, String> def = runtime.defaultContexts();
+            if (def.containsKey("server")) {
+                out.put("server", List.of(def.get("server")));
+            }
+            List<String> worlds = new ArrayList<>();
+            for (var lvl : server.getAllLevels()) {
+                worlds.add(lvl.dimension().toString());
+            }
+            if (!worlds.isEmpty()) {
+                out.put("world", worlds);
+            }
+            return out;
         }
     }
 }

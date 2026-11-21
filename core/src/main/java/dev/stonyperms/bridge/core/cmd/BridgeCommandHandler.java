@@ -3,6 +3,10 @@ package dev.stonyperms.bridge.core.cmd;
 import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
 import dev.stonyperms.bridge.core.ApiException;
 import dev.stonyperms.bridge.core.CheckResult;
+import dev.stonyperms.bridge.core.EditorApplyResult;
+import dev.stonyperms.bridge.core.EditorSessionResult;
+import dev.stonyperms.bridge.core.TreeSessionResult;
+import dev.stonyperms.bridge.core.VerboseSessionResult;
 import dev.stonyperms.bridge.core.ContextParser;
 import dev.stonyperms.bridge.core.DurationParser;
 import dev.stonyperms.bridge.core.GroupMember;
@@ -97,6 +101,26 @@ public final class BridgeCommandHandler {
             case "log", "logs" -> {
                 if (!requireWrite(sender)) return true;
                 handleLog(sender, args);
+                return true;
+            }
+            case "editor", "ed" -> {
+                if (!requireWrite(sender)) return true;
+                handleEditor(sender, label, "all", "", args.size() >= 2 ? joinArgs(args, 1) : "");
+                return true;
+            }
+            case "applyedits", "applyedit" -> {
+                if (!requireWrite(sender)) return true;
+                handleApplyEdits(sender, label, args);
+                return true;
+            }
+            case "tree" -> {
+                if (!requireWrite(sender)) return true;
+                handleTree(sender, label, args);
+                return true;
+            }
+            case "verbose" -> {
+                if (!requireWrite(sender)) return true;
+                handleVerbose(sender, label, args);
                 return true;
             }
             default -> {
@@ -205,6 +229,10 @@ public final class BridgeCommandHandler {
         String actor = platform.actorName(sender);
 
         switch (action) {
+            case "editor", "ed" -> {
+                handleEditor(sender, label, "user", target, "");
+                return;
+            }
             case "parent", "parents", "group", "groups" -> handleUserParent(sender, label, target, actor, args);
             case "primarygroup", "setprimarygroup" -> {
                 if (args.size() < 4) {
@@ -489,6 +517,7 @@ public final class BridgeCommandHandler {
                 case "permission", "perm", "permissions" -> handleGroupPermission(sender, label, group, actor, args);
                 case "parent", "parents" -> handleGroupParent(sender, label, group, actor, args);
                 case "meta" -> handleGroupMeta(sender, label, group, actor, args);
+                case "editor", "ed" -> handleEditor(sender, label, "group", group, "");
                 case "prefix", "suffix" -> handleGroupAffix(sender, label, group, action.equals("prefix"), actor, args);
                 default -> platform.sendMessage(sender,
                         "Unknown group action '" + action + "'. Expected info|members|create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix");
@@ -818,7 +847,7 @@ public final class BridgeCommandHandler {
                 top.addAll(List.of("user", "group", "track"));
             }
             if (canWrite) {
-                top.add("log");
+                top.addAll(List.of("log", "editor", "applyedits", "tree", "verbose"));
             }
             return filter(top, prefix);
         }
@@ -840,7 +869,7 @@ public final class BridgeCommandHandler {
             if (idx == 2) {
                 List<String> subs = new ArrayList<>();
                 if (canAdmin) subs.add("info");
-                if (canWrite) subs.addAll(List.of("group", "parent", "permission", "meta", "promote", "demote", "clear", "primarygroup"));
+                if (canWrite) subs.addAll(List.of("group", "parent", "permission", "meta", "promote", "demote", "editor", "clear", "primarygroup"));
                 return filter(subs, current);
             }
             if (canWrite && idx == 3) {
@@ -876,7 +905,7 @@ public final class BridgeCommandHandler {
             if (idx == 2 && !args.get(1).equalsIgnoreCase("list")) {
                 List<String> subs = new ArrayList<>();
                 if (canAdmin) subs.addAll(List.of("info", "members"));
-                if (canWrite) subs.addAll(List.of("create", "delete", "setweight", "setdisplayname", "permission", "parent", "meta", "prefix", "suffix"));
+                if (canWrite) subs.addAll(List.of("create", "delete", "setweight", "setdisplayname", "permission", "parent", "meta", "prefix", "suffix", "editor"));
                 return filter(subs, current);
             }
             if (canWrite && idx == 3) {
@@ -904,6 +933,12 @@ public final class BridgeCommandHandler {
             if (canWrite && idx >= 1) {
                 return filter(List.of("20", "50", "targetType=user", "targetType=group", "target=", "actor="), current);
             }
+        }
+        if (root.equals("tree") && canWrite && idx == 1) {
+            return filter(List.of(".", "bukkit", "minecraft", "stonyperms", "gate"), current);
+        }
+        if (root.equals("verbose") && canWrite && idx == 1) {
+            return filter(List.of("paste", "upload"), current);
         }
         return List.of();
     }
@@ -1043,8 +1078,80 @@ public final class BridgeCommandHandler {
         return true;
     }
 
+    private void handleEditor(Object sender, String label, String targetType, String target, String filter) {
+        String actor = platform.actorName(sender);
+        List<String> known = platform.collectKnownPermissions();
+        Map<String, List<String>> extraContexts = platform.collectExtraContexts();
+        api.createEditorSession(actor, label, targetType, target, filter, known, extraContexts)
+                .whenComplete((EditorSessionResult res, Throwable err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Failed to open web editor: " + formatError(err));
+                        return;
+                    }
+                    platform.sendUrlMessage(sender, "[StonyPerms] Web Editor link:", res.url(),
+                            "Click to open StonyPermsWeb in your browser");
+                    if (!res.liveSave()) {
+                        platform.sendMessage(sender, "After saving in the browser, run /" + label + " applyedits <code>");
+                    }
+                });
+    }
+
+    private void handleApplyEdits(Object sender, String label, List<String> args) {
+        if (args.size() < 2) {
+            platform.sendMessage(sender, "Usage: /" + label + " applyedits <code>");
+            return;
+        }
+        String code = args.get(1);
+        String actor = platform.actorName(sender);
+        api.applyEditorEdits(code, actor).whenComplete((EditorApplyResult res, Throwable err) -> {
+            if (err != null) {
+                platform.sendMessage(sender, "Failed to apply edits: " + formatError(err));
+                return;
+            }
+            platform.sendMessage(sender, String.format(
+                    "Applied web edits (rev #%d): %d groups (-%d), %d tracks (-%d), %d users (-%d)",
+                    res.revision(), res.groupsUpdated(), res.groupsDeleted(),
+                    res.tracksUpdated(), res.tracksDeleted(), res.usersUpdated(), res.usersDeleted()));
+        });
+    }
+
+    private void handleTree(Object sender, String label, List<String> args) {
+        String rootPrefix = args.size() >= 2 ? args.get(1) : ".";
+        String actor = platform.actorName(sender);
+        api.createTreeSession(rootPrefix, actor, label, platform.collectKnownPermissions())
+                .whenComplete((TreeSessionResult res, Throwable err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Failed to generate permission tree: " + formatError(err));
+                        return;
+                    }
+                    platform.sendUrlMessage(sender,
+                            "[StonyPerms] Permission tree (" + res.count() + " nodes):",
+                            res.url(),
+                            "Click to open Permission Tree Viewer");
+                });
+    }
+
+    private void handleVerbose(Object sender, String label, List<String> args) {
+        String sub = args.size() >= 2 ? args.get(1).toLowerCase(Locale.ROOT) : "paste";
+        if (!sub.equals("paste") && !sub.equals("upload")) {
+            platform.sendMessage(sender, "Usage: /" + label + " verbose paste (start Gate verbose capture via /sp verbose record on the proxy)");
+            return;
+        }
+        String actor = platform.actorName(sender);
+        api.createVerboseSession(actor, label).whenComplete((VerboseSessionResult res, Throwable err) -> {
+            if (err != null) {
+                platform.sendMessage(sender, "Failed to upload verbose log: " + formatError(err));
+                return;
+            }
+            platform.sendUrlMessage(sender,
+                    "[StonyPerms] Verbose log (" + res.count() + " checks):",
+                    res.url(),
+                    "Click to inspect verbose checks in StonyPermsWeb");
+        });
+    }
+
     private void sendUsage(Object sender, String label) {
-        platform.sendMessage(sender, "Usage: /" + label + " <status|refresh|check|reload|user|group|track|log>");
+        platform.sendMessage(sender, "Usage: /" + label + " <status|refresh|check|reload|user|group|track|log|editor|applyedits|tree|verbose>");
     }
 
     private static DurationAndContexts parseOptionalDurationAndContexts(

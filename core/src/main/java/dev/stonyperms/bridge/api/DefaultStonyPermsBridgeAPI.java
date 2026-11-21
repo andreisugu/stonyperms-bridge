@@ -6,6 +6,10 @@ import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.CheckResult;
 import dev.stonyperms.bridge.core.Contexts;
 import dev.stonyperms.bridge.core.Decision;
+import dev.stonyperms.bridge.core.EditorApplyResult;
+import dev.stonyperms.bridge.core.EditorSessionResult;
+import dev.stonyperms.bridge.core.TreeSessionResult;
+import dev.stonyperms.bridge.core.VerboseSessionResult;
 import dev.stonyperms.bridge.core.GroupMember;
 import dev.stonyperms.bridge.core.GroupRecord;
 import dev.stonyperms.bridge.core.GroupRef;
@@ -591,6 +595,53 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
     @Override
     public CompletableFuture<MutationResult> triggerRemoteReload(String actor, String idempotencyKey) {
         return writeGlobalAsync(() -> client.triggerRemoteReload(effectiveActor(actor), idempotencyKey));
+    }
+
+    // Web Suite (StonyPermsWeb)
+
+    @Override
+    public CompletableFuture<EditorSessionResult> createEditorSession(
+            String actor,
+            String commandAlias,
+            String targetType,
+            String target,
+            String filter,
+            List<String> extraPermissions,
+            Map<String, List<String>> extraContexts) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> client.createEditorSession(
+                effectiveActor(actor), commandAlias, targetType, target, filter, extraPermissions, extraContexts));
+    }
+
+    @Override
+    public CompletableFuture<EditorApplyResult> applyEditorEdits(String code, String actor) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> {
+            EditorApplyResult res = client.applyEditorEdits(code, effectiveActor(actor));
+            globalRefreshHook.run();
+            return res;
+        });
+    }
+
+    @Override
+    public CompletableFuture<TreeSessionResult> createTreeSession(
+            String root, String actor, String commandAlias, List<String> extraPermissions) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> client.createTreeSession(root, effectiveActor(actor), commandAlias, extraPermissions));
+    }
+
+    @Override
+    public CompletableFuture<VerboseSessionResult> createVerboseSession(String actor, String commandAlias) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> client.createVerboseSession(effectiveActor(actor), commandAlias));
     }
 
     // -------------------------------------------------------------------------

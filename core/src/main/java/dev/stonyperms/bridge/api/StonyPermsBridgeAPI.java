@@ -4,6 +4,10 @@ import dev.stonyperms.bridge.core.BatchOp;
 import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.CheckResult;
 import dev.stonyperms.bridge.core.Decision;
+import dev.stonyperms.bridge.core.EditorApplyResult;
+import dev.stonyperms.bridge.core.EditorSessionResult;
+import dev.stonyperms.bridge.core.TreeSessionResult;
+import dev.stonyperms.bridge.core.VerboseSessionResult;
 import dev.stonyperms.bridge.core.GroupMember;
 import dev.stonyperms.bridge.core.GroupRecord;
 import dev.stonyperms.bridge.core.GroupRef;
@@ -328,6 +332,24 @@ public interface StonyPermsBridgeAPI {
     CompletableFuture<List<LogEntry>> fetchLogs(int limit, String targetType, String target, String actor);
 
     CompletableFuture<MutationResult> triggerRemoteReload(String actor, String idempotencyKey);
+
+    // Web Suite (StonyPermsWeb)
+
+    CompletableFuture<EditorSessionResult> createEditorSession(
+            String actor,
+            String commandAlias,
+            String targetType,
+            String target,
+            String filter,
+            List<String> extraPermissions,
+            Map<String, List<String>> extraContexts);
+
+    CompletableFuture<EditorApplyResult> applyEditorEdits(String code, String actor);
+
+    CompletableFuture<TreeSessionResult> createTreeSession(
+            String root, String actor, String commandAlias, List<String> extraPermissions);
+
+    CompletableFuture<VerboseSessionResult> createVerboseSession(String actor, String commandAlias);
 
     // -------------------------------------------------------------------------
     // Reactive event subscriptions

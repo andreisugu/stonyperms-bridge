@@ -914,6 +914,90 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
         return MutationResult.forReload(parsed.revision, isReplayed(response), parsed.reloaded);
     }
 
+    public EditorSessionResult createEditorSession(
+            String actor,
+            String commandAlias,
+            String targetType,
+            String target,
+            String filter,
+            List<String> extraPermissions,
+            Map<String, List<String>> extraContexts)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (actor != null && !actor.isBlank()) body.put("actor", actor.trim());
+        if (commandAlias != null && !commandAlias.isBlank()) body.put("commandAlias", commandAlias.trim());
+        if (targetType != null && !targetType.isBlank()) body.put("targetType", targetType.trim());
+        if (target != null && !target.isBlank()) body.put("target", target.trim());
+        if (filter != null && !filter.isBlank()) body.put("filter", filter.trim());
+        if (extraPermissions != null && !extraPermissions.isEmpty()) body.put("extraPermissions", extraPermissions);
+        if (extraContexts != null && !extraContexts.isEmpty()) body.put("extraContexts", extraContexts);
+
+        HttpRequest request = writeRequest("/v1/editor/sessions", actor, null)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        HttpResponse<String> response = sendExpecting(request, 200, 201);
+        JsonObject obj = parseObject(response.body(), "editor session");
+        require(obj, "token", "editor session");
+        require(obj, "url", "editor session");
+        return gson.fromJson(obj, EditorSessionResult.class);
+    }
+
+    public EditorApplyResult applyEditorEdits(String code, String actor)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", requireId(code, "applyedits code"));
+        if (actor != null && !actor.isBlank()) body.put("actor", actor.trim());
+
+        HttpRequest request = writeRequest("/v1/editor/applyedits", actor, null)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        HttpResponse<String> response = sendExpecting(request, 200);
+        return gson.fromJson(parseObject(response.body(), "apply edits"), EditorApplyResult.class);
+    }
+
+    public TreeSessionResult createTreeSession(
+            String root, String actor, String commandAlias, List<String> extraPermissions)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("root", (root == null || root.isBlank()) ? "." : root.trim());
+        if (actor != null && !actor.isBlank()) body.put("actor", actor.trim());
+        if (commandAlias != null && !commandAlias.isBlank()) body.put("commandAlias", commandAlias.trim());
+        if (extraPermissions != null && !extraPermissions.isEmpty()) body.put("extraPermissions", extraPermissions);
+
+        HttpRequest request = writeRequest("/v1/tree/sessions", actor, null)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        HttpResponse<String> response = sendExpecting(request, 200, 201);
+        JsonObject obj = parseObject(response.body(), "tree session");
+        require(obj, "token", "tree session");
+        require(obj, "url", "tree session");
+        return gson.fromJson(obj, TreeSessionResult.class);
+    }
+
+    public VerboseSessionResult createVerboseSession(String actor, String commandAlias)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (actor != null && !actor.isBlank()) body.put("actor", actor.trim());
+        if (commandAlias != null && !commandAlias.isBlank()) body.put("commandAlias", commandAlias.trim());
+
+        HttpRequest request = writeRequest("/v1/verbose/sessions", actor, null)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        HttpResponse<String> response = sendExpecting(request, 200, 201);
+        JsonObject obj = parseObject(response.body(), "verbose session");
+        require(obj, "token", "verbose session");
+        require(obj, "url", "verbose session");
+        return gson.fromJson(obj, VerboseSessionResult.class);
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------

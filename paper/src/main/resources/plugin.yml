@@ -9,7 +9,7 @@ softdepend: [Vault, PlaceholderAPI]
 commands:
   spb:
     description: StonyPerms bridge administration
-    usage: /spb <status|refresh|check|reload|user|group|track|log>
+    usage: /spb <status|refresh|check|reload|user|group|track|log|editor|applyedits|tree|verbose>
 permissions:
   stonyperms.bridge.admin:
     description: Inspect status, snapshots, and reload the StonyPerms bridge

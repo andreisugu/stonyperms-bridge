@@ -112,7 +112,9 @@ Outputs:
 Both platforms expose `/spb` with two distinct permissions (both default `op`):
 
 - **`stonyperms.bridge.admin`** — `status`, `refresh [player]`, `check <player> <permission>`, `reload` (local bridge reload), `user <player> info`, `group list|<name> info|members`, `track list|<name> info`.
-- **`stonyperms.bridge.write`** (additionally requires `write.enabled: true` and a write token) — `user <player> <group|parent|primarygroup|permission|meta|promote|demote|clear> ...`, `group <name> <create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix> ...`, `track <name> <create|delete|set|append|remove> ...`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
+- **`stonyperms.bridge.write`** (additionally requires `write.enabled: true` and a write token) — `user <player> <group|parent|primarygroup|permission|meta|promote|demote|editor|clear> ...`, `group <name> <create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix|editor> ...`, `track <name> <create|delete|set|append|remove> ...`, `editor [filter]`, `applyedits <code>`, `tree [root]`, `verbose paste`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
+
+> Running `/spb editor` on Paper collects every registered plugin permission node from `Bukkit.getPluginManager().getPermissions()` and live world names automatically, opening [StonyPermsWeb](https://andreisugu.github.io/gate-stonyperms/) with clickable Adventure URLs in chat.
 
 `/spb check` asks the proxy directly (`POST /v1/check`); cached gameplay checks read the local snapshot cache.
 
