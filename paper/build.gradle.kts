@@ -41,7 +41,11 @@ tasks.processResources {
 
 tasks.shadowJar {
     archiveClassifier.set("")
+    filesMatching("META-INF/services/**") {
+        duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    }
     mergeServiceFiles()
+    exclude("org/slf4j/**")
 }
 
 tasks.build {

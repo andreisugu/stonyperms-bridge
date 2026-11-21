@@ -7,6 +7,7 @@ import dev.stonyperms.bridge.core.PermissionResolver;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.local.LocalStonyPermsBackend;
+import dev.stonyperms.bridge.core.local.DatabaseConfig;
 import dev.stonyperms.bridge.core.local.StandaloneConfig;
 import net.milkbowl.vault.chat.Chat;
 import org.bukkit.OfflinePlayer;
@@ -99,6 +100,30 @@ class PaperStandaloneIntegrationTest {
             assertEquals("true", papi.onRequest(player, "has_permission_demo.fly"));
             assertTrue(api.isStandalone());
             assertEquals(List.of("vip"), List.of(vaultPerm.getPrimaryGroup("world", off)));
+        }
+    }
+
+    @Test
+    void standaloneSqliteBackendDrivesSnapshotsAndPersistence(@TempDir Path tempDir) throws Exception {
+        StandaloneConfig cfg = new StandaloneConfig(
+                "sqlite", tempDir, DatabaseConfig.defaults(), "default", "stored",
+                StandaloneConfig.StackConfig.defaults(), true, StandaloneConfig.DEFAULT_WEB_URL, 60L);
+        UUID id = UUID.randomUUID();
+        try (LocalStonyPermsBackend backend = LocalStonyPermsBackend.create(cfg, null)) {
+            BridgeService service = new BridgeService(
+                    backend, new SnapshotCache(60_000L), new PermissionResolver(), true, true);
+            DefaultStonyPermsBridgeAPI api = new DefaultStonyPermsBridgeAPI(
+                    service, backend, Runnable::run, true, "paper", ignored -> {}, () -> {});
+            api.createGroup("vip", 50, "&aVIP", "console", null).join();
+            api.setGroupPermission("vip", "sqlite.fly", true, 0L, 0L, Map.of(), "console", null).join();
+            backend.ensureOnlineUser(id, "SqlPlayer", "console");
+            api.addParent(id.toString(), "vip", ParentMode.ADD, 0L, Map.of(), true).join();
+            service.refresh(id, Map.of("world", "world"));
+            assertTrue(api.checkCached(id, "sqlite.fly", Map.of("world", "world")).value() == dev.stonyperms.bridge.core.Tri.TRUE);
+        }
+        try (LocalStonyPermsBackend reopened = LocalStonyPermsBackend.create(cfg, null)) {
+            assertEquals("sqlite", reopened.manager().storage().type());
+            assertEquals("true", reopened.manager().check(id, "sqlite.fly", Map.of()).value());
         }
     }
 }

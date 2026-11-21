@@ -1,6 +1,7 @@
 package dev.stonyperms.bridge.paper;
 
 import dev.stonyperms.bridge.core.DisplayFormat;
+import dev.stonyperms.bridge.core.local.DatabaseConfig;
 import dev.stonyperms.bridge.core.local.StandaloneConfig;
 import org.bukkit.configuration.file.FileConfiguration;
 
@@ -159,6 +160,46 @@ public record PaperBridgeConfig(
             if (!storagePath.isAbsolute()) {
                 storagePath = dataFolder.resolve(storagePath);
             }
+            String storageType;
+            try {
+                storageType = StandaloneConfig.normalizeStorageType(
+                        config.getString("standalone.storage-type", "json"));
+            } catch (IllegalArgumentException error) {
+                throw new PaperConfigException(error.getMessage(), error);
+            }
+            String rawDbFile = safeTrim(config.getString("standalone.database.file", ""));
+            if (!rawDbFile.isEmpty() && !":memory:".equals(rawDbFile) && !rawDbFile.startsWith("file:")) {
+                Path dbPath = Path.of(rawDbFile);
+                if (!dbPath.isAbsolute()) {
+                    rawDbFile = dataFolder.resolve(dbPath).toString();
+                }
+            }
+            String rawPwFile = safeTrim(config.getString("standalone.database.password-file", ""));
+            if (!rawPwFile.isEmpty()) {
+                Path pwPath = Path.of(rawPwFile);
+                if (!pwPath.isAbsolute()) {
+                    rawPwFile = dataFolder.resolve(pwPath).toString();
+                }
+            }
+            DatabaseConfig dbCfg;
+            try {
+                dbCfg = new DatabaseConfig(
+                        rawDbFile,
+                        config.getString("standalone.database.host", "127.0.0.1"),
+                        config.getInt("standalone.database.port", 0),
+                        config.getString("standalone.database.database", "stonyperms"),
+                        config.getString("standalone.database.username", "stonyperms"),
+                        config.getString("standalone.database.password", ""),
+                        rawPwFile,
+                        config.getString("standalone.database.table-prefix", DatabaseConfig.DEFAULT_TABLE_PREFIX),
+                        config.getString("standalone.database.ssl-mode", "prefer"),
+                        config.getInt("standalone.database.max-pool-size", 10),
+                        config.getInt("standalone.database.min-idle", 5),
+                        config.getLong("standalone.database.max-lifetime-seconds", 1800L),
+                        config.getInt("standalone.database.connect-timeout-seconds", 5));
+            } catch (IllegalArgumentException error) {
+                throw new PaperConfigException(error.getMessage(), error);
+            }
             String defaultGroup = safeTrim(config.getString("standalone.default-group", "default"));
             String primaryCalc = safeTrim(config.getString("standalone.primary-group-calculation", "stored"));
             boolean auditLog = config.getBoolean("standalone.audit-log", true);
@@ -175,7 +216,8 @@ public record PaperBridgeConfig(
                     config.getString("standalone.stack.suffix.end-spacer", ""),
                     config.getBoolean("standalone.stack.deduplicate", true));
             standaloneCfg = new StandaloneConfig(
-                    storagePath, defaultGroup, primaryCalc, stack, auditLog, webBaseUrl, expiryCleanupSeconds);
+                    storageType, storagePath, dbCfg, defaultGroup, primaryCalc, stack,
+                    auditLog, webBaseUrl, expiryCleanupSeconds);
         } else {
             String configuredUrl = config.getString("api.url", "http://127.0.0.1:8737");
             String url = configuredUrl == null ? "http://127.0.0.1:8737" : configuredUrl.trim();

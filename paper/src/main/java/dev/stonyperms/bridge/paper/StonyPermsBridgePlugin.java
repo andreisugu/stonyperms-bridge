@@ -114,8 +114,8 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             getCommand("spb").setTabCompleter(this);
         }
         if (bridgeConfig.isStandalone()) {
-            getLogger().info("StonyPerms standalone enabled (storage="
-                    + bridgeConfig.standalone().storageDir() + ", write=" + api.isWriteEnabled() + ")");
+            String targetDesc = localBackend != null ? localBackend.manager().storage().describeTarget() : bridgeConfig.standalone().storageDir().toString();
+            getLogger().info("StonyPerms standalone enabled (storage=" + targetDesc + ", write=" + api.isWriteEnabled() + ")");
         } else {
             getLogger().info("StonyPerms bridge enabled for " + bridgeConfig.apiUrl()
                     + " (write=" + api.isWriteEnabled() + ", sse=" + bridgeConfig.sseEnabled() + ")");
@@ -810,7 +810,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
                 StringBuilder sb = new StringBuilder();
                 sb.append("StonyPerms standalone\n");
                 sb.append("  mode: standalone\n");
-                sb.append("  storage: ").append(bridgeConfig.standalone().storageDir()).append('\n');
+                sb.append("  storage: ").append(mgr.storage().describeTarget()).append('\n');
                 sb.append("  revision: ").append(mgr.revision())
                         .append(" (users=").append(mgr.usersCount())
                         .append(", groups=").append(mgr.groupsCount())

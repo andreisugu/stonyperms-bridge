@@ -165,4 +165,36 @@ class PaperBridgeConfigTest {
         assertThrows(PaperBridgeConfig.PaperConfigException.class,
                 () -> PaperBridgeConfig.from(invalid, dataFolder, null, null));
     }
+
+    @Test
+    void parsesStandaloneDatabaseSettingsAndRejectsInvalidDbConfig() throws Exception {
+        YamlConfiguration config = new YamlConfiguration();
+        config.set("mode", "standalone");
+        config.set("standalone.storage-type", "postgres");
+        config.set("standalone.database.host", "pg.local");
+        config.set("standalone.database.port", 5432);
+        config.set("standalone.database.database", "permsdb");
+        config.set("standalone.database.username", "sp");
+        config.set("standalone.database.table-prefix", "sp_paper_");
+        config.set("standalone.database.ssl-mode", "require");
+
+        PaperBridgeConfig parsed = PaperBridgeConfig.from(config, dataFolder, null, null);
+        assertEquals("postgresql", parsed.standalone().storageType());
+        assertEquals("pg.local", parsed.standalone().database().host());
+        assertEquals(5432, parsed.standalone().database().port());
+        assertEquals("sp_paper_", parsed.standalone().database().tablePrefix());
+
+        YamlConfiguration badType = new YamlConfiguration();
+        badType.set("mode", "standalone");
+        badType.set("standalone.storage-type", "bad_engine");
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(badType, dataFolder, null, null));
+
+        YamlConfiguration badPrefix = new YamlConfiguration();
+        badPrefix.set("mode", "standalone");
+        badPrefix.set("standalone.storage-type", "sqlite");
+        badPrefix.set("standalone.database.table-prefix", "bad-prefix!");
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(badPrefix, dataFolder, null, null));
+    }
 }

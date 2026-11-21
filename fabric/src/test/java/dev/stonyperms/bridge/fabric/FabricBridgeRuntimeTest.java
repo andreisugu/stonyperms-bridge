@@ -7,6 +7,7 @@ import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.Tri;
 import dev.stonyperms.bridge.core.UserInfo;
 import dev.stonyperms.bridge.core.local.LocalPermissionManager;
+import dev.stonyperms.bridge.core.local.DatabaseConfig;
 import dev.stonyperms.bridge.core.local.StandaloneConfig;
 import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
@@ -137,6 +138,32 @@ class FabricBridgeRuntimeTest {
 
         try (LocalPermissionManager reopened = new LocalPermissionManager(st, null)) {
             assertEquals("true", reopened.check(id, "fabric.fly", Map.of()).value());
+        }
+    }
+
+    @Test
+    void runsEndToEndStandaloneSqliteModeWithoutHttp(@TempDir Path tempDir) throws Exception {
+        StandaloneConfig st = new StandaloneConfig(
+                "sqlite", tempDir, DatabaseConfig.defaults(), "default", "stored",
+                StandaloneConfig.StackConfig.defaults(), true, StandaloneConfig.DEFAULT_WEB_URL, 60L);
+        FabricBridgeConfig cfg = new FabricBridgeConfig(
+                FabricBridgeConfig.Mode.STANDALONE,
+                null, "", "", "smp",
+                30, 300, true, true, true, true, "",
+                false, 1000L, 30_000L, false, false, "{prefix}{name}: {message}",
+                false, 1500, 2500, st);
+
+        UUID id = UUID.randomUUID();
+        try (FabricBridgeRuntime rt = new FabricBridgeRuntime(cfg, LoggerFactory.getLogger("test"))) {
+            assertTrue(rt.status().contains("sqlite:"));
+            rt.api().createGroup("vip", 50, "&aVIP", "test", null).join();
+            rt.api().setGroupPermission("vip", "fabric.sqlite", true, 0L, 0L, Map.of(), "test", null).join();
+            rt.api().ensureUser(id, "SqlFab", "default", true, "test", null).join();
+            rt.api().addParent(id.toString(), "vip", ParentMode.ADD, 0L, Map.of(), true).join();
+            assertEquals(Tri.TRUE, rt.resolveOffline(id, "fabric.sqlite").value());
+        }
+        try (LocalPermissionManager reopened = new LocalPermissionManager(st, null)) {
+            assertEquals("true", reopened.check(id, "fabric.sqlite", Map.of()).value());
         }
     }
 }
