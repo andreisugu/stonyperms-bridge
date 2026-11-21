@@ -2,7 +2,7 @@
 
 # 🌉 StonyPerms Bridge
 
-**Real-time Paper & Fabric permission adapters, developer API, and opt-in cross-server administration backed by StonyPerms on Gate.**
+**Dual-mode permissions manager & Paper/Fabric adapter for Minecraft 26.3 — run synced with Gate via HTTP + live SSE (`bridge`), or self-contained with JSON, SQLite, MariaDB/MySQL, and PostgreSQL (`standalone`).**
 
 <p>
   <a href="https://github.com/andreisugu/stonyperms-bridge/actions/workflows/ci.yml"><img src="https://github.com/andreisugu/stonyperms-bridge/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
@@ -13,11 +13,15 @@
 </p>
 
 <p>
-  <a href="#-architecture-v02">Architecture</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-build">Build</a> •
-  <a href="#-commands">Commands</a> •
-  <a href="#-documentation">Documentation</a> •
+  <a href="#-two-operating-modes">Modes</a> •
+  <a href="#-highlights">Highlights</a> •
+  <a href="#-storage-backends-standalone-mode">Storage Backends</a> •
+  <a href="#-bridge-mode--quick-start">Quick Start</a> •
+  <a href="#-chat-tablist--placeholderapi">Chat & Placeholders</a> •
+  <a href="#-commands--permissions">Commands</a> •
+  <a href="#-failure-behavior--limitations">Limitations</a> •
+  <a href="#-build-from-source">Build</a> •
+  <a href="#-documentation">Docs</a> •
   <a href="#-minekube-gate-extensions-suite">Gate Suite</a>
 </p>
 
@@ -25,25 +29,48 @@
 
 ---
 
-## ✨ Highlights
+## 🔀 Two Operating Modes
 
-- **Paper (`paper`):** Materializes StonyPerms nodes into a per-player Bukkit `PermissionAttachment`, registers optional `Vault` (`Permission`/`Chat`) and `PlaceholderAPI` (`%stonyperms_*%`) providers with `softdepend: [Vault, PlaceholderAPI]` (zero shading), and exposes `/spb`, `StonyPermsBridgeAPI` via Bukkit `ServicesManager`, and `StonyPermsUserUpdateEvent`.
-- **Fabric (`fabric`):** Registers a [`fabric-permissions-api`](https://github.com/lucko/fabric-permissions-api) provider (`PermissionCheckEvent`, `OptionRequestEvent`, and offline variants), `/spb`, `StonyPermsBridgeMod.api()`, and `StonyPermsEvents.USER_UPDATED` / `CHANGE_RECEIVED`.
-- **Core (`core`):** JDK-only HTTP client (`StonyPermsClient`), SSE subscriber (`StonyPermsEventStream`), revision/ETag-aware `SnapshotCache`, fail-closed policy, Java port of StonyPerms' evaluation order (`PermissionResolver` with Shorthand (`{a,b}`, `(a|b)`, `{1-N}`), regex `r=...`, and context-specificity tie-breaking), and `StonyPermsBridgeAPI`.
-- **Placeholders (Paper):** `%stonyperms_primary_group%` / `%stonyperms_primary_group_name%`, `%stonyperms_primary_group_display%`, `%stonyperms_prefix%`, `%stonyperms_suffix%`, `%stonyperms_groups%` / `%stonyperms_inherited_groups%`, `%stonyperms_highest_group_by_weight%`, `%stonyperms_lowest_group_by_weight%`, `%stonyperms_weight%`, `%stonyperms_meta_<key>%`, `%stonyperms_in_group_<group>%` / `%stonyperms_inherits_group_<group>%`, `%stonyperms_has_permission_<node>%`, `%stonyperms_check_permission_<node>%`, `%stonyperms_expiry_time_<perm>%`, and `%stonyperms_context_<key>%`.
+Choose per backend whether `stonyperms-bridge` mirrors [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) over HTTP + SSE or runs standalone directly inside Paper / Fabric:
 
-The proxy-side HTTP API lives in [`andreisugu/gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) and is documented in [`docs/http-api.md`](https://github.com/andreisugu/gate-stonyperms/blob/main/docs/http-api.md).
+| Aspect | `mode: "bridge"` *(default)* | `mode: "standalone"` |
+| :--- | :--- | :--- |
+| **Source of truth** | Gate proxy (`gate-stonyperms` `v0.3.0`) | Local backend (`json`, `sqlite`, `mariadb`/`mysql`, or `postgresql`) |
+| **Network dependency** | Scoped Bearer HTTP + live `GET /v1/events` SSE | Zero Gate / HTTP requirement |
+| **Evaluation parity** | Proxy evaluates; bridge caches & materializes snapshots | Identical Java `LocalPermissionEngine` verified against `spec/` (`SHA256SUMS` in CI) |
+| **Commands exposed** | `/spb` *(never claims `/sp` so Gate keeps `/sp`)* | `/spb`, `/sp`, and `/stonyperms` |
+| **Write control** | Opt-in (`write.enabled: true` + distinct write token) | Enabled by default unless `write.enabled: false` |
 
 ---
 
+## ✨ Highlights
 
-## 🏠 Standalone Mode
+- **Paper (`paper`):** Materializes resolved nodes into per-player Bukkit `PermissionAttachment`s, registers optional `Vault` (`Permission` / `Chat`) and `PlaceholderAPI` (`%stonyperms_*%`) providers via `softdepend: [Vault, PlaceholderAPI]` (zero shading), formats chat/tablist display names with network nickname support, exposes `StonyPermsBridgeAPI` on Bukkit `ServicesManager`, and fires `StonyPermsUserUpdateEvent`. Shadowed Paper releases exclude `org/slf4j/**` and merge `META-INF/services/java.sql.Driver` for all SQL backends.
+- **Fabric (`fabric`):** Registers a [`fabric-permissions-api`](https://github.com/lucko/fabric-permissions-api) provider answering online, offline, and Permission API v1 identifier checks from cached/standalone snapshots, resends the Brigadier command tree when snapshots arrive after join, applies chat & display formatting, bundles runtime libraries cleanly via Jar-in-Jar, and exposes `StonyPermsBridgeMod.api()` + `StonyPermsEvents.USER_UPDATED` / `CHANGE_RECEIVED`.
+- **Core (`core`):**
+  - Authoritative standalone engine (`LocalPermissionEngine`, `LocalPermissionManager`) with RE2J `1.8` (`r=...` regex), shorthand expansion (`{a,b}`, `(a|b)`, `{1-N}`), context-specificity tie-breaking, temporary modifiers (`accumulate`, `replace`, `deny`), `primary-group-calculation`, prefix/suffix stacking, bulk updates, search, and `sp1_` portable `PortableWebCodec` URLs for [StonyPermsWeb](https://andreisugu.github.io/gate-stonyperms/).
+  - Dual persistence (`JsonLocalStorage` + `HikariCP 7.1.0` pooled `SqlLocalStorage`) conforming strictly to the canonical Go↔Java conformance spec (`core/src/test/resources/spec/`).
+  - JDK-only HTTP client (`StonyPermsClient`), SSE subscriber (`StonyPermsEventStream`), revision/ETag-aware `SnapshotCache`, and `StonyPermsBridgeAPI`.
 
-Need a self-contained permission plugin/mod without running Gate or an HTTP backend? Set `mode: "standalone"` (Paper) or `"mode": "standalone"` (Fabric) to run `stonyperms-bridge` as an authoritative local permissions manager backed by the exact same JSON flat-file format and evaluation engine as [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms):
+---
 
-- **Shared Go ↔ Java parity:** Evaluation rules, RE2 regex matching (`r=...`), shorthand expansion (`{a,b}`, `{1-5}`), stacking affixes, `sp1_` portable web codes (`StonyPermsWeb` `/editor`, `/tree`, `/verbose`), audit logs, and storage files (`groups.json`, `tracks.json`, `logs.json`, `users/<uuid>.json`) match the canonical spec verified in CI (`core/src/test/resources/spec/`).
-- **Storage Backends (`json`, `sqlite`, `mariadb`/`mysql`, `postgresql`):** Supports both flat-file JSON and HikariCP-pooled relational SQL storage using the canonical v1 schema shared with `gate-stonyperms`. Point both Gate and standalone backends at the same schema or copy JSON/SQLite files between them cleanly.
-- **Conditional `/sp` commands:** In `standalone` mode, Paper and Fabric register `/sp` and `/stonyperms` alongside `/spb` (and accept `stonyperms.admin` / `stonyperms.*` in addition to `stonyperms.bridge.*`). In `bridge` mode, `/sp` is never registered so it never collides with Gate's `/sp` proxy command.
+## 🗄️ Storage Backends (Standalone Mode)
+
+Standalone mode supports flat-file **`json`** (default) plus **HikariCP-pooled** relational SQL databases using the exact same schema v1 (`spec/SPEC.md` §10) as [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms):
+
+| Storage Type | Driver Bundled | Key Behavior |
+| :--- | :--- | :--- |
+| **`json`** *(default)* | Atomic JSON (`Gson`) | Reads/writes `groups.json`, `tracks.json`, `logs.json`, and `users/<uuid>.json` directly compatible with `gate-stonyperms`. |
+| **`sqlite`** / `sqlite3` | `org.xerial:sqlite-jdbc:3.54.1.0` | Embedded single-file database (`<storage-dir>/stonyperms.db` by default or `database.file`), WAL journal mode, foreign keys enforced. |
+| **`mariadb`** / **`mysql`** | `org.mariadb.jdbc:mariadb-java-client:4.0.0` | Connects via MariaDB/MySQL wire protocol; uses InnoDB + `utf8mb4_bin` collation on `meta_key` columns to preserve exact key casing. |
+| **`postgresql`** / `postgres` | `org.postgresql:postgresql:42.7.14` | Full PostgreSQL support with `BIGSERIAL` log IDs, `ON CONFLICT` upserts, and standard `sslMode` mapping (`disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full`). |
+
+### Credential Resolution Order
+In `standalone` SQL mode, passwords resolve in priority order:
+1. `STONYPERMS_BRIDGE_DB_PASSWORD` environment variable
+2. `STONYPERMS_DB_PASSWORD` environment variable
+3. Inline `database.password`
+4. `database.password-file` (Paper) / `database.passwordFile` (Fabric), trimmed of trailing CR/LF
 
 **Paper (`plugins/StonyPermsBridge/config.yml`):**
 ```yaml
@@ -52,12 +79,16 @@ standalone:
   storage-type: "sqlite" # json | sqlite | mysql | mariadb | postgresql
   storage-dir: "data"
   database:
+    file: ""             # Optional SQLite file override
     host: "127.0.0.1"
-    port: 0
+    port: 0              # 0 uses engine default (3306 for mysql/mariadb, 5432 for postgresql)
     database: "stonyperms"
     username: "stonyperms"
-    password-file: "" # or STONYPERMS_BRIDGE_DB_PASSWORD / STONYPERMS_DB_PASSWORD
+    password: ""
+    password-file: ""    # Prefer env var or password-file over inline password
     table-prefix: "stonyperms_"
+    ssl-mode: "prefer"
+  default-group: "default"
   primary-group-calculation: "stored"
 ```
 
@@ -73,7 +104,9 @@ standalone:
       "port": 0,
       "database": "stonyperms",
       "username": "stonyperms",
-      "tablePrefix": "stonyperms_"
+      "passwordFile": "",
+      "tablePrefix": "stonyperms_",
+      "sslMode": "prefer"
     },
     "primaryGroupCalculation": "stored"
   }
@@ -81,7 +114,8 @@ standalone:
 ```
 
 ---
-## 🏗️ Architecture (v0.2)
+
+## 🌉 Bridge Mode & Quick Start
 
 ```text
 Gate + gate-stonyperms (single source of truth)
@@ -91,21 +125,12 @@ Gate + gate-stonyperms (single source of truth)
         └──────────────► Fabric mod  ──► fabric-permissions-api / StonyPermsBridgeMod.api()
 ```
 
-- **Near-real-time propagation:** When `sse.enabled: true` (default), backends subscribe to `GET /v1/events` (`text/event-stream`) with exponential backoff (`1000ms`–`30000ms`), refreshing changed online players immediately while keeping `ETag` / `If-None-Match` polling (`refresh-seconds: 30`) as a self-healing fallback.
-- **Opt-in write capability:** Disabled (`write.enabled: false`) by default. Backends granted a separate write-tier token (`STONYPERMS_BRIDGE_WRITE_TOKEN`, `api.write-token`, or `api.write-token-file`) can run mutating `/spb user|group|track`, `/spb log`, and `/spb reload remote` commands and call `StonyPermsBridgeAPI` / Vault write methods.
+### Releases & Downloads
+Download release jars (`stonyperms-bridge-paper-<version>.jar`, `stonyperms-bridge-fabric-<version>.jar`) and `SHA256SUMS` from [GitHub Releases](https://github.com/andreisugu/stonyperms-bridge/releases):
+- **Paper:** Drop `stonyperms-bridge-paper-0.2.0.jar` into `plugins/`.
+- **Fabric:** Drop `stonyperms-bridge-fabric-0.2.0.jar` into `mods/` alongside Fabric Loader `>=0.20.0`, Fabric API, and `fabric-permissions-api`.
 
-### Modules
-
-| Module | Output | Purpose |
-| :--- | :--- | :--- |
-| `core` | library / nested Fabric jar (`include(project(":core"))`) | HTTP client, SSE subscriber, snapshot cache, resolver, `StonyPermsBridgeAPI`, `/spb` command engine |
-| `paper` | `stonyperms-bridge-paper-*.jar` | Paper plugin, attachment materializer, Vault, PlaceholderAPI, `/spb` |
-| `fabric` | `stonyperms-bridge-fabric-*.jar` | Fabric mod (`fabric-permissions-api`), `/spb`, Fabric events |
-
----
-
-## 🚀 Quick Start
-
+### Connecting to Gate (`mode: "bridge"`)
 1. On the Gate host, enable the read API (and optionally the write tier with a **distinct** token file):
 
    ```toml
@@ -132,49 +157,76 @@ Gate + gate-stonyperms (single source of truth)
      http://127.0.0.1:8737/v1/health
    ```
 
-3. Install the backend adapter and give it a **single-line** `0600` read token file via `STONYPERMS_BRIDGE_TOKEN`, `api.token`, or `api.token-file` (`tokenFile` on Fabric). Set `server-name` (`serverName` on Fabric) to match the Gate backend name used in StonyPerms contexts.
+3. Supply the **single-line** `0600` read token on each backend via `STONYPERMS_BRIDGE_TOKEN`, `api.token`, or `api.token-file` (`tokenFile` on Fabric). Set `server-name` (`serverName` on Fabric) to match the Gate backend name used in StonyPerms contexts.
 
-Full setup: [`docs/install.md`](docs/install.md) | Store, stats & developer API workflows: [`docs/integrations.md`](docs/integrations.md).
+- **Near-real-time propagation:** With `sse.enabled: true` (default), backends subscribe to `GET /v1/events` (`text/event-stream`) with exponential backoff (`1000ms`–`30000ms`), while `ETag` / `If-None-Match` polling (`refresh-seconds: 30`) provides self-healing fallback.
+- **Opt-in write capability:** Disabled (`write.enabled: false`) by default in `bridge` mode. Supplying a separate write token (`STONYPERMS_BRIDGE_WRITE_TOKEN`, `api.write-token`, `api.write-token-file`) unlocks `/spb` mutations, `/spb log`, `/spb reload remote`, `StonyPermsBridgeAPI` writes, and Vault write calls.
 
----
+### Modules
 
-## 🛠️ Build
-
-Requires JDK 25+ and network access to Maven Central, PaperMC, and Fabric.
-
-```bash
-./gradlew build
-./gradlew test
-```
-
-Outputs:
-- `paper/build/libs/stonyperms-bridge-paper-0.2.0-SNAPSHOT.jar`
-- `fabric/build/libs/stonyperms-bridge-fabric-0.2.0-SNAPSHOT.jar`
+| Module | Artifact | Purpose |
+| :--- | :--- | :--- |
+| `core` | library / nested Fabric jar | Engine, JSON + SQL storage, HTTP client, SSE subscriber, cache, `StonyPermsBridgeAPI`, CLI engine |
+| `paper` | `stonyperms-bridge-paper-*.jar` | Paper plugin, attachment materializer, Vault, PlaceholderAPI, chat/tablist, `/spb` (+ standalone `/sp`) |
+| `fabric` | `stonyperms-bridge-fabric-*.jar` | Fabric mod (`fabric-permissions-api`), chat/display formatting, Fabric events, `/spb` (+ standalone `/sp`) |
 
 ---
 
-## ⌨️ Commands
+## 💬 Chat, Tablist & PlaceholderAPI
 
-Both platforms expose `/spb` with two distinct permissions (both default `op`):
+- **Chat & Display Formatting:** Enabled by default (`chat.enabled: true`, `format: "{prefix}{name}{suffix}&r&7: &f{message}"` on both Paper and Fabric; `tablist.enabled: true` on Paper; `display.enabled: true` on Fabric) and respects synced network nicknames (`meta.nickname` / `meta.nick`).
+- **PlaceholderAPI (Paper):**
 
-- **`stonyperms.bridge.admin`** — `status`, `refresh [player]`, `check <player> <permission>`, `search <query> [page]`, `reload` (local bridge reload), `user <player> <info|permission info|parent info>`, `group list|<name> <info|members|permission info|parent info>`, `track list|<name> info`.
-- **`stonyperms.bridge.write`** (additionally requires `write.enabled: true` and a write token) — `user <player> <group|parent|primarygroup|permission|meta|promote|demote|editor|clear> ...` (including `unsettemp`, `removetemp`, `settrack`, `cleartrack`, temp modifiers `accumulate|replace|deny`, `addprefix`/`addtempprefix`), `group <name> <create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix|editor> ...`, `track <name> <create|delete|set|append|remove|clone> ...`, `bulkupdate <all|users|groups> <update|delete> ...`, `sync` / `networksync`, `editor [filter]`, `applyedits <code>`, `tree [root]`, `verbose paste`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
+| Placeholder | Returns |
+| :--- | :--- |
+| `%stonyperms_primary_group%` / `%stonyperms_primary_group_name%` | Resolved primary group key |
+| `%stonyperms_primary_group_display%` | Primary group display name |
+| `%stonyperms_prefix%` / `%stonyperms_suffix%` | Effective prefix / suffix |
+| `%stonyperms_groups%` / `%stonyperms_inherited_groups%` | Comma-separated inherited group keys |
+| `%stonyperms_highest_group_by_weight%` / `%stonyperms_lowest_group_by_weight%` | Highest / lowest weighted group key |
+| `%stonyperms_weight%` | Effective weight of highest weighted group |
+| `%stonyperms_meta_<key>%` | Metadata string for `<key>` |
+| `%stonyperms_in_group_<group>%` / `%stonyperms_inherits_group_<group>%` | `true` / `false` membership check |
+| `%stonyperms_has_permission_<node>%` / `%stonyperms_check_permission_<node>%` | Boolean check / tri-state (`true`/`false`/`undefined`) |
+| `%stonyperms_expiry_time_<perm>%` | Remaining duration for temporary permission `<perm>` |
+| `%stonyperms_context_<key>%` | Active context value for `<key>` on the backend |
 
-> Running `/spb editor` on Paper collects every registered plugin permission node from `Bukkit.getPluginManager().getPermissions()` and live world names automatically, opening [StonyPermsWeb](https://andreisugu.github.io/gate-stonyperms/) with clickable Adventure URLs in chat.
+---
 
-`/spb check` asks the proxy directly (`POST /v1/check`); cached gameplay checks read the local snapshot cache.
+## ⌨️ Commands & Permissions
+
+- **`stonyperms.bridge.admin`** *(default `op`)* — `status`, `info`, `refresh [player]`, `check <player> <permission>`, `search <query> [page]`, `reload`, `user <player> <info|permission info|parent info>`, `group list|<name> <info|members|permission info|parent info>`, `track list|<name> info`.
+- **`stonyperms.bridge.write`** *(default `op`; requires write enabled)* — Full `user`, `group`, `track`, `bulkupdate`, `sync`/`networksync`, `editor [filter]`, `applyedits <code>`, `tree [root]`, `verbose paste`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
+- **`stonyperms.admin` / `stonyperms.*`** *(standalone mode)* — Grants access to `/sp`, `/stonyperms`, and `/spb` without requiring proxy-style bridge nodes.
+
+> Running `/spb editor` (or `/sp editor` in standalone mode) on Paper collects registered plugin permission nodes from `Bukkit.getPluginManager().getPermissions()` and live world names automatically, opening [StonyPermsWeb](https://andreisugu.github.io/gate-stonyperms/) with clickable Adventure URLs in chat.
 
 ---
 
 ## 🛡️ Failure Behavior & Limitations
 
-- API unreachable with no cache: `fail-closed: true` denies StonyPerms-managed permissions; `false` falls back to platform defaults.
-- API unreachable with a cached snapshot: served until `stale-grace-seconds`, then denied (or platform defaults if `fail-closed` is off).
-- An explicit `undefined` evaluation means StonyPerms has no opinion, so the platform default applies.
-- Operators are managed by StonyPerms by default (`apply-to-ops: true` on both Paper and Fabric); set `false` to skip ops entirely so they stay vanilla/standard-op.
-- Missing or disabled write configuration fails closed before issuing HTTP writes (`403 writes_disabled` / `403 insufficient_scope` on the proxy as well).
+- In `bridge` mode when Gate is unreachable with no cached snapshot: `fail-closed: true` denies StonyPerms-managed permissions; `false` falls back to platform defaults.
+- When Gate is unreachable with a valid cached snapshot: served up to `stale-grace-seconds`, then revoked (or platform defaults if `fail-closed` is off).
+- An explicit `undefined` evaluation means StonyPerms has no opinion, so vanilla/platform defaults apply.
+- Operators are managed by StonyPerms by default (`apply-to-ops: true`); set `false` to leave ops vanilla.
 
-See [`docs/limitations.md`](docs/limitations.md) for platform boundaries (Bukkit attachment materialization, Fabric `fabric-permissions-api` scope, single-line bridge token files).
+See [`docs/limitations.md`](docs/limitations.md) for platform boundaries.
+
+---
+
+## 🛠️ Build from Source
+
+Requires JDK 25+ and network access to Maven Central, PaperMC, and Fabric.
+
+```bash
+./gradlew clean build check
+# Release jars without -SNAPSHOT suffix:
+./gradlew clean build -PreleaseVersion=0.2.0
+```
+
+Outputs:
+- `paper/build/libs/stonyperms-bridge-paper-0.2.0.jar`
+- `fabric/build/libs/stonyperms-bridge-fabric-0.2.0.jar`
 
 ---
 
@@ -194,9 +246,9 @@ See [`docs/limitations.md`](docs/limitations.md) for platform boundaries (Bukkit
 
 | Project | Role | Stack |
 | :--- | :--- | :--- |
-| [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) | Context-aware permissions, tracks, Web UI & v0.2 R/W HTTP + SSE API | `Go 1.26` |
-| **[`stonyperms-bridge`](https://github.com/andreisugu/stonyperms-bridge)** *(this repo)* | Paper & Fabric permission adapters, live SSE, `/spb` commands, Vault & PAPI | `Java 25` |
-| [`gate-bettertab`](https://github.com/andreisugu/gate-bettertab) | Animated RGB / MiniMessage TAB lists, server groups, weights & placeholders | `Go 1.26` |
+| [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) | Context-aware permissions, SQL/JSON storage, Web UI & v0.2 HTTP + SSE API | `Go 1.26` |
+| **[`stonyperms-bridge`](https://github.com/andreisugu/stonyperms-bridge)** *(this repo)* | Paper & Fabric standalone/bridge permissions, SQL/JSON, `/spb` & `/sp`, Vault & PAPI | `Java 25` |
+| [`gate-bettertab`](https://github.com/andreisugu/gate-bettertab) | Animated RGB / MiniMessage TAB lists, 1.21.2+ sorting, `/nick` & StonyPerms roles | `Go 1.26` |
 | [`gate-discord4gate`](https://github.com/andreisugu/gate-discord4gate) | Bidirectional Discord <> Minecraft chat, slash commands & webhook avatars | `Go 1.26` |
 | [`gate-hybridforwarding`](https://github.com/andreisugu/gate-hybridforwarding) | Per-backend Velocity Modern, Legacy BungeeCord, BungeeGuard & None forwarding | `Go 1.26` |
 | [`gate-simplewhitelist`](https://github.com/andreisugu/gate-simplewhitelist) | Lock-free `atomic.Pointer` whitelist by username, UUID, IP & CIDR | `Go 1.26` |
