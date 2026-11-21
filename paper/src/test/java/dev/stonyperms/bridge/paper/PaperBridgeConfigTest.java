@@ -29,6 +29,13 @@ class PaperBridgeConfigTest {
         assertEquals(300, parsed.staleGraceSeconds());
         assertTrue(parsed.failClosed());
         assertTrue(parsed.useStaleOnError());
+        assertTrue(parsed.applyToOps());
+        assertFalse(parsed.writeEnabled());
+        assertTrue(parsed.sseEnabled());
+        assertEquals(1000L, parsed.sseReconnectMinMs());
+        assertEquals(30_000L, parsed.sseReconnectMaxMs());
+        assertTrue(parsed.integrationsPlaceholderApi());
+        assertTrue(parsed.integrationsVault());
         assertFalse(parsed.isRemotePlainHttp());
     }
 
@@ -55,7 +62,6 @@ class PaperBridgeConfigTest {
         assertEquals("file-token-0123456789", parsed.token());
     }
 
-
     @Test
     void rejectsUrlWithoutHost() {
         YamlConfiguration config = new YamlConfiguration();
@@ -81,5 +87,47 @@ class PaperBridgeConfigTest {
         badScheme.set("api.token", "inline-token-0123456789");
         assertThrows(PaperBridgeConfig.PaperConfigException.class,
                 () -> PaperBridgeConfig.from(badScheme, dataFolder, null));
+    }
+
+    @Test
+    void writeEnabledRequiresValidWriteTokenAndParsesSseAndIntegrations() throws Exception {
+        YamlConfiguration missingWrite = new YamlConfiguration();
+        missingWrite.set("api.token", "inline-token-0123456789");
+        missingWrite.set("write.enabled", true);
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(missingWrite, dataFolder, null, null));
+
+        YamlConfiguration shortWrite = new YamlConfiguration();
+        shortWrite.set("api.token", "inline-token-0123456789");
+        shortWrite.set("write.enabled", true);
+        shortWrite.set("api.write-token", "too-short");
+        assertThrows(PaperBridgeConfig.PaperConfigException.class,
+                () -> PaperBridgeConfig.from(shortWrite, dataFolder, null, null));
+
+        Files.writeString(dataFolder.resolve("write-token"), "file-write-token-0123456789\n");
+        YamlConfiguration validFileWrite = new YamlConfiguration();
+        validFileWrite.set("api.token", "inline-token-0123456789");
+        validFileWrite.set("api.write-token-file", "write-token");
+        validFileWrite.set("server-name", "lobby");
+        validFileWrite.set("write.enabled", true);
+        validFileWrite.set("sse.enabled", false);
+        validFileWrite.set("sse.reconnect-min-ms", 500);
+        validFileWrite.set("sse.reconnect-max-ms", 5000);
+        validFileWrite.set("integrations.placeholderapi", false);
+        validFileWrite.set("integrations.vault", false);
+
+        PaperBridgeConfig parsed = PaperBridgeConfig.from(validFileWrite, dataFolder, null, null);
+        assertTrue(parsed.writeEnabled());
+        assertEquals("file-write-token-0123456789", parsed.writeToken());
+        assertEquals("paper:lobby", parsed.effectiveDefaultActor());
+        assertFalse(parsed.sseEnabled());
+        assertEquals(500L, parsed.sseReconnectMinMs());
+        assertEquals(5000L, parsed.sseReconnectMaxMs());
+        assertFalse(parsed.integrationsPlaceholderApi());
+        assertFalse(parsed.integrationsVault());
+
+        PaperBridgeConfig envOverrides = PaperBridgeConfig.from(
+                validFileWrite, dataFolder, null, "env-write-token-0123456789");
+        assertEquals("env-write-token-0123456789", envOverrides.writeToken());
     }
 }

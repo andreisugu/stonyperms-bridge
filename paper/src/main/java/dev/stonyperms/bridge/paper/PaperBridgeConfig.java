@@ -12,21 +12,54 @@ import java.util.Locale;
 public record PaperBridgeConfig(
         URI apiUrl,
         String token,
+        String writeToken,
         String serverName,
         int refreshSeconds,
         int staleGraceSeconds,
         boolean failClosed,
         boolean useStaleOnError,
         boolean applyToOps,
+        boolean writeEnabled,
+        String defaultActor,
+        boolean sseEnabled,
+        long sseReconnectMinMs,
+        long sseReconnectMaxMs,
+        boolean integrationsPlaceholderApi,
+        boolean integrationsVault,
         boolean debug) {
 
     public static final int MIN_TOKEN_LENGTH = 16;
 
+    /** Backward-compatible 9-arg constructor (defaults to read-only with SSE & integrations enabled). */
+    public PaperBridgeConfig(
+            URI apiUrl,
+            String token,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean applyToOps,
+            boolean debug) {
+        this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
+                applyToOps, false, "", true, 1000L, 30_000L, true, true, debug);
+    }
+
     public static PaperBridgeConfig from(FileConfiguration config, Path dataFolder) throws PaperConfigException {
-        return from(config, dataFolder, System.getenv("STONYPERMS_BRIDGE_TOKEN"));
+        return from(
+                config,
+                dataFolder,
+                System.getenv("STONYPERMS_BRIDGE_TOKEN"),
+                System.getenv("STONYPERMS_BRIDGE_WRITE_TOKEN"));
     }
 
     static PaperBridgeConfig from(FileConfiguration config, Path dataFolder, String envToken)
+            throws PaperConfigException {
+        return from(config, dataFolder, envToken, null);
+    }
+
+    static PaperBridgeConfig from(
+            FileConfiguration config, Path dataFolder, String envToken, String envWriteToken)
             throws PaperConfigException {
         String configuredUrl = config.getString("api.url", "http://127.0.0.1:8737");
         String url = configuredUrl == null ? "http://127.0.0.1:8737" : configuredUrl.trim();
@@ -44,53 +77,102 @@ public record PaperBridgeConfig(
             throw new PaperConfigException("api.url must include a host");
         }
 
-        String token = resolveToken(config, dataFolder, envToken);
+        String token = resolveRequiredToken(
+                config.getString("api.token", ""),
+                config.getString("api.token-file", ""),
+                dataFolder,
+                envToken,
+                "STONYPERMS_BRIDGE_TOKEN, api.token, or api.token-file");
         if (token.length() < MIN_TOKEN_LENGTH) {
             throw new PaperConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
         }
 
+        boolean writeEnabled = config.getBoolean("write.enabled", false);
+        String writeToken = resolveOptionalToken(
+                config.getString("api.write-token", ""),
+                config.getString("api.write-token-file", ""),
+                dataFolder,
+                envWriteToken);
+        if (writeEnabled) {
+            if (writeToken.isBlank()) {
+                throw new PaperConfigException(
+                        "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.write-token, or api.write-token-file");
+            }
+            if (writeToken.length() < MIN_TOKEN_LENGTH) {
+                throw new PaperConfigException(
+                        "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+            }
+        }
+
+        String serverName = safeTrim(config.getString("server-name", ""));
+        String defaultActor = safeTrim(config.getString("write.default-actor", ""));
         int refresh = Math.max(5, config.getInt("refresh-seconds", 30));
         int staleGrace = Math.max(0, config.getInt("stale-grace-seconds", 300));
+        long sseMin = Math.max(100L, config.getLong("sse.reconnect-min-ms", 1000L));
+        long sseMax = Math.max(sseMin, config.getLong("sse.reconnect-max-ms", 30_000L));
 
         return new PaperBridgeConfig(
                 apiUrl,
                 token,
-                config.getString("server-name", "").trim(),
+                writeToken,
+                serverName,
                 refresh,
                 staleGrace,
                 config.getBoolean("fail-closed", true),
                 config.getBoolean("use-stale-on-error", true),
                 config.getBoolean("apply-to-ops", true),
+                writeEnabled,
+                defaultActor,
+                config.getBoolean("sse.enabled", true),
+                sseMin,
+                sseMax,
+                config.getBoolean("integrations.placeholderapi", true),
+                config.getBoolean("integrations.vault", true),
                 config.getBoolean("debug", false));
     }
 
-    private static String resolveToken(FileConfiguration config, Path dataFolder, String envToken)
-            throws PaperConfigException {
-        String env = envToken;
-        if (env != null && !env.isBlank()) {
-            return env.trim();
+    public String effectiveDefaultActor() {
+        if (!defaultActor.isEmpty()) {
+            return defaultActor;
         }
+        return serverName.isEmpty() ? "paper" : "paper:" + serverName;
+    }
 
-        String inline = config.getString("api.token", "");
+    private static String resolveRequiredToken(
+            String inline, String tokenFile, Path dataFolder, String envToken, String hint)
+            throws PaperConfigException {
+        String resolved = resolveOptionalToken(inline, tokenFile, dataFolder, envToken);
+        if (resolved.isEmpty()) {
+            throw new PaperConfigException("no API token: set " + hint);
+        }
+        return resolved;
+    }
+
+    private static String resolveOptionalToken(
+            String inline, String tokenFile, Path dataFolder, String envToken)
+            throws PaperConfigException {
+        if (envToken != null && !envToken.isBlank()) {
+            return envToken.trim();
+        }
         if (inline != null && !inline.isBlank()) {
             return inline.trim();
         }
-
-        String tokenFile = config.getString("api.token-file", "");
         if (tokenFile != null && !tokenFile.isBlank()) {
-            Path path = Path.of(tokenFile);
+            Path path = Path.of(tokenFile.trim());
             if (!path.isAbsolute()) {
                 path = dataFolder.resolve(path);
             }
             try {
                 return Files.readString(path, StandardCharsets.UTF_8).trim();
             } catch (IOException error) {
-                throw new PaperConfigException("cannot read api.token-file: " + path, error);
+                throw new PaperConfigException("cannot read token file: " + path, error);
             }
         }
+        return "";
+    }
 
-        throw new PaperConfigException(
-                "no API token: set STONYPERMS_BRIDGE_TOKEN, api.token, or api.token-file");
+    private static String safeTrim(String value) {
+        return value == null ? "" : value.trim();
     }
 
     public boolean isRemotePlainHttp() {

@@ -1,12 +1,17 @@
 package dev.stonyperms.bridge.paper;
 
+import dev.stonyperms.bridge.api.DefaultStonyPermsBridgeAPI;
+import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
 import dev.stonyperms.bridge.core.BridgeService;
-import dev.stonyperms.bridge.core.CheckResult;
+import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.Contexts;
 import dev.stonyperms.bridge.core.PermissionResolver;
 import dev.stonyperms.bridge.core.Snapshot;
 import dev.stonyperms.bridge.core.SnapshotCache;
 import dev.stonyperms.bridge.core.StonyPermsClient;
+import dev.stonyperms.bridge.core.StonyPermsEventStream;
+import dev.stonyperms.bridge.core.cmd.BridgeCommandHandler;
+import dev.stonyperms.bridge.core.cmd.CommandPlatform;
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
@@ -17,6 +22,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -24,8 +30,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,29 +41,45 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Paper adapter. Applies materialized StonyPerms snapshots as Bukkit
- * PermissionAttachments and refreshes them on join, world change, and a
- * configurable interval.
+ * PermissionAttachments, connects to Gate SSE events, and exposes
+ * {@link StonyPermsBridgeAPI} + optional Vault/PlaceholderAPI integrations.
  */
 public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener, TabCompleter {
+
+    private static volatile StonyPermsBridgeAPI activeApi;
 
     private final PermissionResolver resolver = new PermissionResolver();
     private final PaperPermissionApplier applier = new PaperPermissionApplier(this);
     private final Set<UUID> refreshing = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Set<String>> managedKeys = new ConcurrentHashMap<>();
     private final Map<UUID, BukkitTask> reapplyTasks = new ConcurrentHashMap<>();
+    private final Map<UUID, Snapshot> appliedSnapshots = new ConcurrentHashMap<>();
     private final AtomicLong lastFailureLogAt = new AtomicLong();
 
     private ExecutorService io;
     private PaperBridgeConfig bridgeConfig;
     private StonyPermsClient client;
     private BridgeService service;
+    private DefaultStonyPermsBridgeAPI api;
+    private StonyPermsEventStream eventStream;
+    private BridgeCommandHandler commandHandler;
     private PaperPermissionUniverse universe;
+    private Runnable placeholderCleanup = () -> {};
+    private Runnable vaultCleanup = () -> {};
     private int refreshTaskId = -1;
     private volatile String lastError = "";
 
+    public static Optional<StonyPermsBridgeAPI> getApi() {
+        return Optional.ofNullable(activeApi);
+    }
+
+    public static Optional<StonyPermsBridgeAPI> getService() {
+        return Optional.ofNullable(activeApi);
+    }
+
     @Override
     public void onEnable() {
-        io = Executors.newFixedThreadPool(2, runnable -> {
+        io = Executors.newFixedThreadPool(4, runnable -> {
             Thread thread = new Thread(runnable, "stonyperms-bridge");
             thread.setDaemon(true);
             return thread;
@@ -74,17 +96,23 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             getCommand("spb").setExecutor(this);
             getCommand("spb").setTabCompleter(this);
         }
-        getLogger().info("StonyPerms bridge enabled for " + bridgeConfig.apiUrl());
+        getLogger().info("StonyPerms bridge enabled for " + bridgeConfig.apiUrl()
+                + " (write=" + api.isWriteEnabled() + ", sse=" + bridgeConfig.sseEnabled() + ")");
     }
 
     @Override
     public void onDisable() {
+        activeApi = null;
         stopScheduler();
+        stopEventStream();
+        runCleanups();
+        getServer().getServicesManager().unregisterAll(this);
         for (BukkitTask task : reapplyTasks.values()) {
             task.cancel();
         }
         reapplyTasks.clear();
         managedKeys.clear();
+        appliedSnapshots.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
         }
@@ -105,21 +133,28 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             return false;
         }
 
+        Duration connectTimeout = Duration.ofMillis(Math.max(250, getConfig().getInt("api.connect-timeout-ms", 1500)));
+        Duration requestTimeout = Duration.ofMillis(Math.max(500, getConfig().getInt("api.request-timeout-ms", 2500)));
         StonyPermsClient newClient = new StonyPermsClient(
                 newConfig.apiUrl(),
                 newConfig.token(),
-                Duration.ofMillis(getConfig().getInt("api.connect-timeout-ms", 1500)),
-                Duration.ofMillis(getConfig().getInt("api.request-timeout-ms", 2500)));
+                newConfig.writeToken(),
+                connectTimeout,
+                requestTimeout);
         SnapshotCache cache = new SnapshotCache(newConfig.staleGraceSeconds() * 1000L);
         BridgeService newService = new BridgeService(
                 newClient, cache, resolver, newConfig.failClosed(), newConfig.useStaleOnError());
 
         stopScheduler();
+        stopEventStream();
+        runCleanups();
+        getServer().getServicesManager().unregisterAll(this);
         for (BukkitTask task : reapplyTasks.values()) {
             task.cancel();
         }
         reapplyTasks.clear();
         managedKeys.clear();
+        appliedSnapshots.clear();
         for (Player player : Bukkit.getOnlinePlayers()) {
             applier.clear(player);
         }
@@ -133,27 +168,165 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         universe = new PaperPermissionUniverse(getServer().getPluginManager());
         lastError = "";
 
+        DefaultStonyPermsBridgeAPI newApi = new DefaultStonyPermsBridgeAPI(
+                newService,
+                newClient,
+                io,
+                newConfig.writeEnabled(),
+                newConfig.effectiveDefaultActor(),
+                this::refreshByUuid,
+                this::refreshAllAsync);
+        api = newApi;
+        activeApi = newApi;
+        commandHandler = new BridgeCommandHandler(newApi, new PaperCommandPlatform());
+
+        getServer().getServicesManager().register(
+                StonyPermsBridgeAPI.class, newApi, this, ServicePriority.Normal);
+
+        if (newConfig.integrationsPlaceholderApi()
+                && getServer().getPluginManager().isPluginEnabled("PlaceholderAPI")) {
+            placeholderCleanup = PlaceholderApiRegistrar.register(
+                    this, newApi, this::contexts, defaultContexts());
+        }
+        if (newConfig.integrationsVault()
+                && getServer().getPluginManager().isPluginEnabled("Vault")) {
+            vaultCleanup = VaultRegistrar.register(
+                    this, newApi, this::contexts, this::worldContexts);
+        }
+
         if (newConfig.isRemotePlainHttp()) {
             getLogger().warning("api.url uses plain HTTP to a non-loopback host; prefer TLS or a private network");
+        }
+
+        if (newConfig.sseEnabled()) {
+            StonyPermsEventStream stream = new StonyPermsEventStream(
+                    newConfig.apiUrl(),
+                    newConfig.token(),
+                    connectTimeout,
+                    newConfig.sseReconnectMinMs(),
+                    newConfig.sseReconnectMaxMs(),
+                    this::handleSseEvent);
+            eventStream = stream;
+            stream.start();
         }
 
         startScheduler();
         return true;
     }
 
+    private void runCleanups() {
+        try {
+            placeholderCleanup.run();
+        } catch (RuntimeException ignored) {
+        }
+        placeholderCleanup = () -> {};
+        try {
+            vaultCleanup.run();
+        } catch (RuntimeException ignored) {
+        }
+        vaultCleanup = () -> {};
+    }
+
+    private void stopEventStream() {
+        StonyPermsEventStream current = eventStream;
+        eventStream = null;
+        if (current != null) {
+            current.close();
+        }
+    }
+
+    private void handleSseEvent(ChangeEvent event) {
+        DefaultStonyPermsBridgeAPI currentApi = api;
+        if (currentApi != null) {
+            currentApi.notifyChangeEvent(event);
+        }
+        if (!isEnabled()) {
+            return;
+        }
+        String type = event.type();
+        if ("user_updated".equals(type) || "user_deleted".equals(type)) {
+            getServer().getScheduler().runTask(this, () -> {
+                if (!isEnabled()) {
+                    return;
+                }
+                Player target = null;
+                if (!event.uuid().isEmpty()) {
+                    try {
+                        target = Bukkit.getPlayer(UUID.fromString(event.uuid()));
+                    } catch (IllegalArgumentException ignored) {
+                    }
+                }
+                if (target == null && !event.username().isEmpty()) {
+                    target = Bukkit.getPlayerExact(event.username());
+                }
+                if (target != null && target.isOnline()) {
+                    if ("user_deleted".equals(type) && service != null) {
+                        service.cache().invalidate(target.getUniqueId());
+                    }
+                    refreshAsync(target);
+                }
+            });
+        } else if ("group_updated".equals(type)
+                || "group_deleted".equals(type)
+                || "reload".equals(type)
+                || "expiry_cleanup".equals(type)) {
+            getServer().getScheduler().runTask(this, () -> {
+                if (isEnabled()) {
+                    refreshAllOnline();
+                }
+            });
+        }
+    }
+
     private void startScheduler() {
         long ticks = 20L * bridgeConfig.refreshSeconds();
-        refreshTaskId = getServer().getScheduler().runTaskTimer(this, () -> {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                refreshAsync(player);
-            }
-        }, ticks, ticks).getTaskId();
+        refreshTaskId = getServer().getScheduler().runTaskTimer(
+                this, this::refreshAllOnline, ticks, ticks).getTaskId();
     }
 
     private void stopScheduler() {
         if (refreshTaskId != -1) {
             getServer().getScheduler().cancelTask(refreshTaskId);
             refreshTaskId = -1;
+        }
+    }
+
+    private void refreshAllOnline() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            refreshAsync(player);
+        }
+    }
+
+    private void refreshAllAsync() {
+        if (!isEnabled()) {
+            return;
+        }
+        if (Bukkit.isPrimaryThread()) {
+            refreshAllOnline();
+        } else {
+            getServer().getScheduler().runTask(this, this::refreshAllOnline);
+        }
+    }
+
+    private void refreshByUuid(UUID uuid) {
+        if (uuid == null || !isEnabled()) {
+            return;
+        }
+        if (Bukkit.isPrimaryThread()) {
+            Player online = Bukkit.getPlayer(uuid);
+            if (online != null && online.isOnline()) {
+                refreshAsync(online);
+            }
+        } else {
+            getServer().getScheduler().runTask(this, () -> {
+                if (!isEnabled()) {
+                    return;
+                }
+                Player online = Bukkit.getPlayer(uuid);
+                if (online != null && online.isOnline()) {
+                    refreshAsync(online);
+                }
+            });
         }
     }
 
@@ -168,13 +341,13 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         UUID id = event.getPlayer().getUniqueId();
         cancelReapply(id);
         managedKeys.remove(id);
+        appliedSnapshots.remove(id);
         applier.clear(event.getPlayer());
         refreshing.remove(id);
     }
 
     @EventHandler
     public void onWorldChange(PlayerChangedWorldEvent event) {
-        // Apply the destination-world cache immediately; the refresh updates it.
         applyPlayer(event.getPlayer());
         refreshAsync(event.getPlayer());
     }
@@ -191,7 +364,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
                 lastError = "";
             } catch (Exception error) {
                 lastError = error.getClass().getSimpleName() + ": " + error.getMessage();
-                noteFailure(error);
+                noteFailure();
             } finally {
                 refreshing.remove(id);
             }
@@ -211,6 +384,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         UUID id = player.getUniqueId();
         if (player.isOp() && !bridgeConfig.applyToOps()) {
             cancelReapply(id);
+            appliedSnapshots.remove(id);
             applier.clear(player);
             return;
         }
@@ -219,6 +393,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         SnapshotCache.Lookup lookup = service.lookup(id, contexts);
         if (!lookup.present() || (lookup.state() == SnapshotCache.State.STALE && !bridgeConfig.useStaleOnError())) {
             cancelReapply(id);
+            appliedSnapshots.remove(id);
             applyUnavailable(player);
             return;
         }
@@ -231,8 +406,18 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             managedKeys.put(id, Set.copyOf(values.keySet()));
             applier.apply(player, safe);
             scheduleReapply(player, key, snapshot);
+
+            Snapshot prev = appliedSnapshots.put(id, snapshot);
+            if (prev == null || prev.revision() != snapshot.revision() || !prev.equals(snapshot)) {
+                long prevRev = prev == null ? -1L : prev.revision();
+                if (api != null) {
+                    api.notifyUserUpdated(id, snapshot);
+                }
+                getServer().getPluginManager().callEvent(new StonyPermsUserUpdateEvent(player, snapshot, prevRev));
+            }
         }, () -> {
             cancelReapply(id);
+            appliedSnapshots.remove(id);
             applyUnavailable(player);
         });
     }
@@ -289,7 +474,24 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         return contexts;
     }
 
-    private void noteFailure(Exception error) {
+    private Map<String, String> worldContexts(String worldName) {
+        Map<String, String> contexts = new LinkedHashMap<>();
+        if (!bridgeConfig.serverName().isEmpty()) {
+            contexts.put("server", bridgeConfig.serverName());
+        }
+        if (worldName != null && !worldName.isBlank()) {
+            contexts.put("world", worldName);
+        }
+        return contexts;
+    }
+
+    private Map<String, String> defaultContexts() {
+        return bridgeConfig.serverName().isEmpty()
+                ? Map.of()
+                : Map.of("server", bridgeConfig.serverName());
+    }
+
+    private void noteFailure() {
         long now = System.currentTimeMillis();
         long previous = lastFailureLogAt.get();
         if (bridgeConfig.debug() || now - previous > 300_000) {
@@ -300,104 +502,134 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (args.length == 0) {
-            sender.sendMessage("Usage: /" + label + " <status|refresh|check|reload>");
+        BridgeCommandHandler handler = commandHandler;
+        if (handler == null) {
+            sender.sendMessage("StonyPerms bridge is not initialized");
             return true;
         }
-
-        switch (args[0].toLowerCase(Locale.ROOT)) {
-            case "status" -> {
-                sender.sendMessage("StonyPerms bridge");
-                sender.sendMessage("  api: " + bridgeConfig.apiUrl());
-                sender.sendMessage("  server context: "
-                        + (bridgeConfig.serverName().isEmpty() ? "(none)" : bridgeConfig.serverName()));
-                sender.sendMessage("  cached snapshots: " + service.cache().size());
-                sender.sendMessage("  attachments: " + applier.size());
-                sender.sendMessage("  fail-closed: " + bridgeConfig.failClosed()
-                        + ", stale grace: " + bridgeConfig.staleGraceSeconds() + "s");
-                if (!lastError.isEmpty()) {
-                    sender.sendMessage("  last error: " + lastError);
-                }
-                return true;
-            }
-            case "refresh" -> {
-                if (args.length >= 2) {
-                    Player target = Bukkit.getPlayerExact(args[1]);
-                    if (target == null) {
-                        sender.sendMessage("Player not found: " + args[1]);
-                        return true;
-                    }
-                    refreshAsync(target);
-                    sender.sendMessage("Refresh requested for " + target.getName());
-                } else {
-                    for (Player player : Bukkit.getOnlinePlayers()) {
-                        refreshAsync(player);
-                    }
-                    sender.sendMessage("Refresh requested for all online players");
-                }
-                return true;
-            }
-            case "check" -> {
-                if (args.length < 3) {
-                    sender.sendMessage("Usage: /" + label + " check <player> <permission>");
-                    return true;
-                }
-                Player target = Bukkit.getPlayerExact(args[1]);
-                if (target == null) {
-                    sender.sendMessage("Player not found: " + args[1]);
-                    return true;
-                }
-                String permission = args[2];
-                Map<String, String> contexts = contexts(target);
-                io.submit(() -> {
-                    String message;
-                    try {
-                        CheckResult result = service.authoritativeCheck(target.getUniqueId(), permission, contexts);
-                        message = permission + " = " + result.value() + " (" + result.source() + ")";
-                    } catch (Exception error) {
-                        message = "check failed: " + error.getClass().getSimpleName();
-                    }
-                    String finalMessage = message;
-                    getServer().getScheduler().runTask(this, () -> sender.sendMessage(finalMessage));
-                });
-                return true;
-            }
-            case "reload" -> {
-                reloadConfig();
-                if (reloadBridge()) {
-                    for (Player player : Bukkit.getOnlinePlayers()) {
-                        refreshAsync(player);
-                    }
-                    sender.sendMessage("StonyPerms bridge reloaded");
-                } else {
-                    sender.sendMessage("Reload failed; see console");
-                }
-                return true;
-            }
-            default -> {
-                sender.sendMessage("Usage: /" + label + " <status|refresh|check|reload>");
-                return true;
-            }
-        }
+        return handler.execute(sender, label, args);
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (args.length == 1) {
-            return filter(List.of("status", "refresh", "check", "reload"), args[0]);
+        BridgeCommandHandler handler = commandHandler;
+        return handler == null ? List.of() : handler.tabComplete(sender, args);
+    }
+
+    private final class PaperCommandPlatform implements CommandPlatform {
+
+        @Override
+        public boolean hasAdminPermission(Object sender) {
+            return sender instanceof CommandSender cs && cs.hasPermission("stonyperms.bridge.admin");
         }
-        if (args.length == 2 && (args[0].equalsIgnoreCase("refresh") || args[0].equalsIgnoreCase("check"))) {
+
+        @Override
+        public boolean hasWritePermission(Object sender) {
+            return sender instanceof CommandSender cs && cs.hasPermission("stonyperms.bridge.write");
+        }
+
+        @Override
+        public String actorName(Object sender) {
+            if (sender instanceof Player player) {
+                return player.getName();
+            }
+            if (sender instanceof CommandSender cs) {
+                String name = cs.getName();
+                return (name == null || name.isBlank()) ? bridgeConfig.effectiveDefaultActor() : name;
+            }
+            return bridgeConfig.effectiveDefaultActor();
+        }
+
+        @Override
+        public void sendMessage(Object sender, String message) {
+            if (!(sender instanceof CommandSender cs)) {
+                return;
+            }
+            if (Bukkit.isPrimaryThread() || !isEnabled()) {
+                cs.sendMessage(message);
+            } else {
+                getServer().getScheduler().runTask(StonyPermsBridgePlugin.this, () -> cs.sendMessage(message));
+            }
+        }
+
+        @Override
+        public List<String> onlinePlayerNames() {
             List<String> names = new ArrayList<>();
             for (Player player : Bukkit.getOnlinePlayers()) {
                 names.add(player.getName());
             }
-            return filter(names, args[1]);
+            return names;
         }
-        return List.of();
-    }
 
-    private static List<String> filter(List<String> values, String prefix) {
-        String lower = prefix.toLowerCase(Locale.ROOT);
-        return values.stream().filter(value -> value.toLowerCase(Locale.ROOT).startsWith(lower)).toList();
+        @Override
+        public Optional<OnlinePlayerRef> findOnlinePlayer(String nameOrUuid) {
+            if (nameOrUuid == null || nameOrUuid.isBlank()) {
+                return Optional.empty();
+            }
+            Player player = Bukkit.getPlayerExact(nameOrUuid.trim());
+            if (player == null) {
+                try {
+                    UUID uuid = UUID.fromString(nameOrUuid.trim());
+                    player = Bukkit.getPlayer(uuid);
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+            if (player == null || !player.isOnline()) {
+                return Optional.empty();
+            }
+            return Optional.of(new OnlinePlayerRef(player.getUniqueId(), player.getName(), contexts(player)));
+        }
+
+        @Override
+        public void requestRefreshAll() {
+            refreshAllAsync();
+        }
+
+        @Override
+        public void requestRefreshPlayer(UUID uuid) {
+            refreshByUuid(uuid);
+        }
+
+        @Override
+        public boolean reloadBridge() {
+            reloadConfig();
+            return StonyPermsBridgePlugin.this.reloadBridge();
+        }
+
+        @Override
+        public String statusSummary() {
+            String sseState;
+            StonyPermsEventStream stream = eventStream;
+            if (!bridgeConfig.sseEnabled() || stream == null) {
+                sseState = "disabled";
+            } else if (stream.connected()) {
+                sseState = "connected";
+            } else if (!stream.lastError().isEmpty()) {
+                sseState = "disconnected (" + stream.lastError() + ")";
+            } else {
+                sseState = "connecting";
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("StonyPerms bridge\n");
+            sb.append("  api: ").append(bridgeConfig.apiUrl()).append('\n');
+            sb.append("  server context: ")
+                    .append(bridgeConfig.serverName().isEmpty() ? "(none)" : bridgeConfig.serverName()).append('\n');
+            sb.append("  cached snapshots: ").append(service.cache().size()).append('\n');
+            sb.append("  attachments: ").append(applier.size()).append('\n');
+            sb.append("  fail-closed: ").append(bridgeConfig.failClosed())
+                    .append(", stale grace: ").append(bridgeConfig.staleGraceSeconds()).append("s\n");
+            sb.append("  write: ").append(api.isWriteEnabled() ? "enabled (actor=" + bridgeConfig.effectiveDefaultActor() + ")" : "disabled")
+                    .append('\n');
+            sb.append("  sse: ").append(sseState);
+            if (!lastError.isEmpty()) {
+                sb.append("\n  last error: ").append(lastError);
+            }
+            return sb.toString();
+        }
+
+        @Override
+        public Map<String, String> defaultContexts() {
+            return StonyPermsBridgePlugin.this.defaultContexts();
+        }
     }
 }

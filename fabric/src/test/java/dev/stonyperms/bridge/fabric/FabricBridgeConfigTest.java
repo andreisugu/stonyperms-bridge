@@ -27,11 +27,14 @@ class FabricBridgeConfigTest {
         assertEquals(30, config.refreshSeconds());
         assertTrue(config.failClosed());
         assertTrue(config.useStaleOnError());
+        assertTrue(config.applyToOps());
+        assertFalse(config.writeEnabled());
+        assertTrue(config.sseEnabled());
         assertFalse(config.isRemotePlainHttp());
     }
 
     @Test
-    void envTokenWinsAndCustomValuesAreParsed() throws Exception {
+    void backwardCompatibleV01JsonDefaultsSafely() throws Exception {
         Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
                 {
                   "api": {"url": "http://perms.internal:8737", "token": "inline-token-0123456789"},
@@ -52,10 +55,51 @@ class FabricBridgeConfigTest {
         assertEquals(60, config.staleGraceSeconds());
         assertFalse(config.failClosed());
         assertFalse(config.useStaleOnError());
+        assertTrue(config.applyToOps());
+        assertFalse(config.writeEnabled());
+        assertTrue(config.sseEnabled());
         assertTrue(config.debug());
         assertTrue(config.isRemotePlainHttp());
     }
 
+    @Test
+    void parsesWriteSseAndApplyToOpsAndRejectsMissingWriteToken() throws Exception {
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {
+                  "api": {"url": "http://127.0.0.1:8737", "token": "inline-token-0123456789"},
+                  "write": {"enabled": true}
+                }
+                """);
+        assertThrows(FabricBridgeConfig.ConfigException.class,
+                () -> FabricBridgeConfig.load(configDir, null, null));
+
+        Files.writeString(configDir.resolve("write-token"), "file-write-token-0123456789\n");
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {
+                  "api": {
+                    "url": "http://127.0.0.1:8737",
+                    "token": "inline-token-0123456789",
+                    "writeTokenFile": "write-token"
+                  },
+                  "serverName": "clankers",
+                  "applyToOps": false,
+                  "write": {"enabled": true, "defaultActor": ""},
+                  "sse": {"enabled": false, "reconnectMinMs": 500, "reconnectMaxMs": 5000}
+                }
+                """);
+
+        FabricBridgeConfig config = FabricBridgeConfig.load(configDir, null, null);
+        assertFalse(config.applyToOps());
+        assertTrue(config.writeEnabled());
+        assertEquals("file-write-token-0123456789", config.writeToken());
+        assertEquals("fabric:clankers", config.effectiveDefaultActor());
+        assertFalse(config.sseEnabled());
+        assertEquals(500L, config.sseReconnectMinMs());
+        assertEquals(5000L, config.sseReconnectMaxMs());
+
+        FabricBridgeConfig envOverride = FabricBridgeConfig.load(configDir, null, "env-write-token-0123456789");
+        assertEquals("env-write-token-0123456789", envOverride.writeToken());
+    }
 
     @Test
     void rejectsUrlWithoutHost() throws Exception {

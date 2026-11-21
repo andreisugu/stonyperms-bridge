@@ -14,11 +14,18 @@ import java.util.Locale;
 public record FabricBridgeConfig(
         URI apiUrl,
         String token,
+        String writeToken,
         String serverName,
         int refreshSeconds,
         int staleGraceSeconds,
         boolean failClosed,
         boolean useStaleOnError,
+        boolean applyToOps,
+        boolean writeEnabled,
+        String defaultActor,
+        boolean sseEnabled,
+        long sseReconnectMinMs,
+        long sseReconnectMaxMs,
         boolean debug,
         int connectTimeoutMs,
         int requestTimeoutMs) {
@@ -32,6 +39,8 @@ public record FabricBridgeConfig(
                 "url": "http://127.0.0.1:8737",
                 "token": "",
                 "tokenFile": "token",
+                "writeToken": "",
+                "writeTokenFile": "",
                 "connectTimeoutMs": 1500,
                 "requestTimeoutMs": 2500
               },
@@ -40,15 +49,48 @@ public record FabricBridgeConfig(
               "staleGraceSeconds": 300,
               "failClosed": true,
               "useStaleOnError": true,
+              "applyToOps": true,
+              "write": {
+                "enabled": false,
+                "defaultActor": ""
+              },
+              "sse": {
+                "enabled": true,
+                "reconnectMinMs": 1000,
+                "reconnectMaxMs": 30000
+              },
               "debug": false
             }
             """;
 
+    /** Backward-compatible 10-arg constructor. */
+    public FabricBridgeConfig(
+            URI apiUrl,
+            String token,
+            String serverName,
+            int refreshSeconds,
+            int staleGraceSeconds,
+            boolean failClosed,
+            boolean useStaleOnError,
+            boolean debug,
+            int connectTimeoutMs,
+            int requestTimeoutMs) {
+        this(apiUrl, token, "", serverName, refreshSeconds, staleGraceSeconds, failClosed, useStaleOnError,
+                true, false, "", true, 1000L, 30_000L, debug, connectTimeoutMs, requestTimeoutMs);
+    }
+
     public static FabricBridgeConfig load(Path configDir) throws ConfigException {
-        return load(configDir, System.getenv("STONYPERMS_BRIDGE_TOKEN"));
+        return load(
+                configDir,
+                System.getenv("STONYPERMS_BRIDGE_TOKEN"),
+                System.getenv("STONYPERMS_BRIDGE_WRITE_TOKEN"));
     }
 
     static FabricBridgeConfig load(Path configDir, String envToken) throws ConfigException {
+        return load(configDir, envToken, null);
+    }
+
+    static FabricBridgeConfig load(Path configDir, String envToken, String envWriteToken) throws ConfigException {
         Path file = configDir.resolve(FILE_NAME);
         try {
             Files.createDirectories(configDir);
@@ -56,11 +98,11 @@ public record FabricBridgeConfig(
                 Files.writeString(file, DEFAULT_CONFIG, StandardCharsets.UTF_8);
             }
             JsonObject root = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
-            JsonObject api = root.has("api") && root.get("api").isJsonObject()
-                    ? root.getAsJsonObject("api")
-                    : new JsonObject();
+            JsonObject api = object(root, "api");
+            JsonObject write = object(root, "write");
+            JsonObject sse = object(root, "sse");
 
-            String url = string(api, "url", "http://127.0.0.1:8737");
+            String url = string(api, "url", "http://127.0.0.1:8737").trim();
             URI apiUrl;
             try {
                 apiUrl = URI.create(url);
@@ -75,19 +117,53 @@ public record FabricBridgeConfig(
                 throw new ConfigException("api.url must include a host");
             }
 
-            String token = resolveToken(api, configDir, envToken);
+            String token = resolveToken(
+                    string(api, "token", ""),
+                    string(api, "tokenFile", ""),
+                    configDir,
+                    envToken);
+            if (token.isEmpty()) {
+                throw new ConfigException("no API token: set STONYPERMS_BRIDGE_TOKEN, api.token, or api.tokenFile");
+            }
             if (token.length() < MIN_TOKEN_LENGTH) {
                 throw new ConfigException("API token must be at least " + MIN_TOKEN_LENGTH + " characters");
             }
 
+            boolean writeEnabled = bool(write, "enabled", false);
+            String writeToken = resolveToken(
+                    string(api, "writeToken", ""),
+                    string(api, "writeTokenFile", ""),
+                    configDir,
+                    envWriteToken);
+            if (writeEnabled) {
+                if (writeToken.isEmpty()) {
+                    throw new ConfigException(
+                            "write.enabled is true but no write token was found: set STONYPERMS_BRIDGE_WRITE_TOKEN, api.writeToken, or api.writeTokenFile");
+                }
+                if (writeToken.length() < MIN_TOKEN_LENGTH) {
+                    throw new ConfigException(
+                            "API write token must be at least " + MIN_TOKEN_LENGTH + " characters");
+                }
+            }
+
+            long sseMin = Math.max(100L, longVal(sse, "reconnectMinMs", 1000L));
+            long sseMax = Math.max(sseMin, longVal(sse, "reconnectMaxMs", 30_000L));
+
             return new FabricBridgeConfig(
                     apiUrl,
                     token,
+                    writeToken,
                     string(root, "serverName", "").trim(),
                     Math.max(5, integer(root, "refreshSeconds", 30)),
                     Math.max(0, integer(root, "staleGraceSeconds", 300)),
                     bool(root, "failClosed", true),
                     bool(root, "useStaleOnError", true),
+                    bool(root, "applyToOps", true),
+                    writeEnabled,
+                    string(write, "defaultActor", "").trim(),
+                    bool(sse, "enabled", true),
+                    sseMin,
+                    sseMax,
                     bool(root, "debug", false),
                     Math.max(250, integer(api, "connectTimeoutMs", 1500)),
                     Math.max(500, integer(api, "requestTimeoutMs", 2500)));
@@ -98,27 +174,39 @@ public record FabricBridgeConfig(
         }
     }
 
-    private static String resolveToken(JsonObject api, Path configDir, String envToken) throws ConfigException {
+    public String effectiveDefaultActor() {
+        if (!defaultActor.isEmpty()) {
+            return defaultActor;
+        }
+        return serverName.isEmpty() ? "fabric" : "fabric:" + serverName;
+    }
+
+    private static String resolveToken(String inline, String tokenFile, Path configDir, String envToken)
+            throws ConfigException {
         if (envToken != null && !envToken.isBlank()) {
             return envToken.trim();
         }
-        String inline = string(api, "token", "");
-        if (!inline.isBlank()) {
+        if (inline != null && !inline.isBlank()) {
             return inline.trim();
         }
-        String tokenFile = string(api, "tokenFile", "");
-        if (!tokenFile.isBlank()) {
-            Path path = Path.of(tokenFile);
+        if (tokenFile != null && !tokenFile.isBlank()) {
+            Path path = Path.of(tokenFile.trim());
             if (!path.isAbsolute()) {
                 path = configDir.resolve(path);
             }
             try {
                 return Files.readString(path, StandardCharsets.UTF_8).trim();
             } catch (IOException error) {
-                throw new ConfigException("cannot read api.tokenFile: " + path, error);
+                throw new ConfigException("cannot read token file: " + path, error);
             }
         }
-        throw new ConfigException("no API token: set STONYPERMS_BRIDGE_TOKEN, api.token, or api.tokenFile");
+        return "";
+    }
+
+    private static JsonObject object(JsonObject root, String key) {
+        return root.has(key) && root.get(key).isJsonObject()
+                ? root.getAsJsonObject(key)
+                : new JsonObject();
     }
 
     private static String string(JsonObject object, String key, String fallback) {
@@ -129,6 +217,11 @@ public record FabricBridgeConfig(
     private static int integer(JsonObject object, String key, int fallback) {
         JsonElement value = object.get(key);
         return value == null || value.isJsonNull() ? fallback : value.getAsInt();
+    }
+
+    private static long longVal(JsonObject object, String key, long fallback) {
+        JsonElement value = object.get(key);
+        return value == null || value.isJsonNull() ? fallback : value.getAsLong();
     }
 
     private static boolean bool(JsonObject object, String key, boolean fallback) {
