@@ -1,6 +1,9 @@
 package dev.stonyperms.bridge.api;
 
 import dev.stonyperms.bridge.core.BatchOp;
+import dev.stonyperms.bridge.core.BulkConstraintRecord;
+import dev.stonyperms.bridge.core.BulkUpdateSummaryRecord;
+import dev.stonyperms.bridge.core.SearchResultRecord;
 import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.CheckResult;
 import dev.stonyperms.bridge.core.Decision;
@@ -89,6 +92,10 @@ public interface StonyPermsBridgeAPI {
 
     CompletableFuture<HealthInfo> fetchHealth();
 
+    default CompletableFuture<SearchResultRecord> search(String query) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("search not implemented"));
+    }
+
     // -------------------------------------------------------------------------
     // Cross-server writes & admin (fail closed unless isWriteEnabled() is true)
     // -------------------------------------------------------------------------
@@ -130,6 +137,13 @@ public interface StonyPermsBridgeAPI {
     CompletableFuture<MutationResult> removeParent(
             String idOrName, String group, Map<String, String> contexts, String actor, String idempotencyKey);
 
+    default CompletableFuture<MutationResult> removeParent(
+            String idOrName, String group, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return tempOnly
+                ? CompletableFuture.failedFuture(new UnsupportedOperationException("tempOnly removeParent not implemented"))
+                : removeParent(idOrName, group, contexts, actor, idempotencyKey);
+    }
+
     default CompletableFuture<MutationResult> removeParent(String idOrName, String group, Map<String, String> contexts) {
         return removeParent(idOrName, group, contexts, defaultActor(), null);
     }
@@ -152,6 +166,26 @@ public interface StonyPermsBridgeAPI {
             String idempotencyKey);
 
     default CompletableFuture<MutationResult> setPermission(
+            String idOrName,
+            String key,
+            boolean value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setPermission(idOrName, key, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> unsetPermission(
+            String idOrName, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return tempOnly
+                ? CompletableFuture.failedFuture(new UnsupportedOperationException("tempOnly unsetPermission not implemented"))
+                : unsetPermission(idOrName, key, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> setPermission(
             String idOrName, String key, boolean value, long durationSeconds, Map<String, String> contexts) {
         return setPermission(idOrName, key, value, durationSeconds, 0L, contexts, defaultActor(), null);
     }
@@ -165,6 +199,24 @@ public interface StonyPermsBridgeAPI {
 
     CompletableFuture<MutationResult> setMeta(
             String idOrName, String key, String value, String actor, String idempotencyKey);
+
+    default CompletableFuture<MutationResult> setMeta(
+            String idOrName,
+            String key,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setMeta(idOrName, key, value, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> unsetMeta(
+            String idOrName, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return unsetMeta(idOrName, key, actor, idempotencyKey);
+    }
 
     default CompletableFuture<MutationResult> setMeta(String idOrName, String key, String value) {
         return setMeta(idOrName, key, value, defaultActor(), null);
@@ -214,8 +266,46 @@ public interface StonyPermsBridgeAPI {
         return setSuffix(idOrName, priority, value, durationSeconds, 0L, contexts, defaultActor(), null);
     }
 
+    default CompletableFuture<MutationResult> setPrefix(
+            String idOrName,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setPrefix(idOrName, priority, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> removePrefix(
+            String idOrName, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return removePrefix(idOrName, priority, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> setSuffix(
+            String idOrName,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setSuffix(idOrName, priority, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
     CompletableFuture<MutationResult> removeSuffix(
             String idOrName, int priority, String actor, String idempotencyKey);
+
+    default CompletableFuture<MutationResult> removeSuffix(
+            String idOrName, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return removeSuffix(idOrName, priority, actor, idempotencyKey);
+    }
 
     default CompletableFuture<MutationResult> removeSuffix(String idOrName, int priority) {
         return removeSuffix(idOrName, priority, defaultActor(), null);
@@ -314,8 +404,119 @@ public interface StonyPermsBridgeAPI {
             String actor,
             String idempotencyKey);
 
+    default CompletableFuture<MutationResult> setGroupPermission(
+            String name,
+            String key,
+            boolean value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setGroupPermission(name, key, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> unsetGroupPermission(
+            String name, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return unsetGroupPermission(name, key, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> removeGroupParent(
+            String name, String parentGroup, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return removeGroupParent(name, parentGroup, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> setGroupMeta(
+            String name,
+            String key,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setGroupMeta(name, key, value, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> unsetGroupMeta(
+            String name, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return unsetGroupMeta(name, key, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> setGroupPrefix(
+            String name,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setGroupPrefix(name, priority, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> removeGroupPrefix(
+            String name, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return removeGroupPrefix(name, priority, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<MutationResult> setGroupSuffix(
+            String name,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
+        return setGroupSuffix(name, priority, value, durationSeconds, expiry, contexts, actor, idempotencyKey);
+    }
+
     CompletableFuture<MutationResult> removeGroupSuffix(
             String name, int priority, String actor, String idempotencyKey);
+
+    default CompletableFuture<MutationResult> removeGroupSuffix(
+            String name, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return removeGroupSuffix(name, priority, actor, idempotencyKey);
+    }
+
+    default CompletableFuture<BulkUpdateSummaryRecord> bulkUpdate(
+            String scope,
+            String action,
+            String field,
+            String value,
+            List<BulkConstraintRecord> constraints,
+            boolean dryRun,
+            String actor,
+            String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("bulkUpdate not implemented"));
+    }
+
+    default CompletableFuture<MutationResult> setUserTrack(
+            String idOrName, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("setUserTrack not implemented"));
+    }
+
+    default CompletableFuture<MutationResult> clearUserTrack(
+            String idOrName, String track, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("clearUserTrack not implemented"));
+    }
+
+    default CompletableFuture<MutationResult> setGroupTrack(
+            String name, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("setGroupTrack not implemented"));
+    }
+
+    default CompletableFuture<MutationResult> clearGroupTrack(
+            String name, String track, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return CompletableFuture.failedFuture(new UnsupportedOperationException("clearGroupTrack not implemented"));
+    }
 
     // Track CRUD
 

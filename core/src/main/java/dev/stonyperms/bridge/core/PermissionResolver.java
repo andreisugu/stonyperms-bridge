@@ -13,13 +13,9 @@ import java.util.Map;
  * resolved snapshot:
  *
  * <ol>
- *   <li>user direct exact</li>
- *   <li>user wildcard (most specific)</li>
- *   <li>each inherited group in descending weight: exact, then wildcard</li>
+ *   <li>user nodes: exact > wildcard/pattern, breaking ties by context specificity</li>
+ *   <li>each inherited group in descending weight: exact > wildcard/pattern, context specificity</li>
  * </ol>
- *
- * A higher-weight group's wildcard therefore beats a lower-weight group's
- * exact node, exactly as on the proxy.
  */
 public final class PermissionResolver {
 
@@ -46,27 +42,53 @@ public final class PermissionResolver {
                 continue;
             }
 
+            Node bestNode = null;
+            Node.MatchResult bestMatch = null;
             for (Node node : nodes) {
-                if (!node.isWildcard() && node.active(nowEpochSeconds, contexts) && node.key().equals(target)) {
-                    return new Decision(Tri.of(node.value()), source);
-                }
-            }
-
-            Node best = null;
-            for (Node node : nodes) {
-                if (!node.isWildcard() || !node.active(nowEpochSeconds, contexts) || !node.matchesPermission(target)) {
+                if (!node.active(nowEpochSeconds, contexts)) {
                     continue;
                 }
-                if (best == null || node.key().length() > best.key().length()) {
-                    best = node;
+                Node.MatchResult mr = node.evaluateMatch(target);
+                if (!mr.matched()) {
+                    continue;
+                }
+                if (bestNode == null || isBetterMatch(node, mr, bestNode, bestMatch)) {
+                    bestNode = node;
+                    bestMatch = mr;
                 }
             }
-            if (best != null) {
-                return new Decision(Tri.of(best.value()), source + ":wildcard(" + best.key() + ")");
+            if (bestNode != null) {
+                String src = bestMatch.exact() ? source : source + ":wildcard(" + bestNode.key() + ")";
+                return new Decision(Tri.of(bestNode.value()), src);
             }
         }
 
         return Decision.undefined("default");
+    }
+
+    private static boolean isBetterMatch(
+            Node candidate, Node.MatchResult candMr, Node current, Node.MatchResult curMr) {
+        if (candMr.exact() != curMr.exact()) {
+            return candMr.exact();
+        }
+        int candCtx = candidate.contexts().size();
+        int curCtx = current.contexts().size();
+        if (candMr.exact()) {
+            if (candCtx != curCtx) {
+                return candCtx > curCtx;
+            }
+            if (candMr.specificityScore() != curMr.specificityScore()) {
+                return candMr.specificityScore() > curMr.specificityScore();
+            }
+            return !candidate.value() && current.value();
+        }
+        if (candMr.specificityScore() != curMr.specificityScore()) {
+            return candMr.specificityScore() > curMr.specificityScore();
+        }
+        if (candCtx != curCtx) {
+            return candCtx > curCtx;
+        }
+        return !candidate.value() && current.value();
     }
 
     /**

@@ -420,10 +420,20 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return removeParent(idOrName, group, contexts, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removeParent(
+            String idOrName,
+            String group,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        String path = "/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+        String path = appendQueryParam("/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
                 + "/parents/" + encodePathSegment(requireId(group, "group"))
-                + contextQuery(contexts);
+                + contextQuery(contexts), tempOnly ? "tempOnly=true" : null);
         HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeUserMutation(request);
     }
@@ -449,8 +459,21 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setPermission(idOrName, key, value, durationSeconds, expiry, contexts, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setPermission(
+            String idOrName,
+            String key,
+            boolean value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        Map<String, Object> body = permissionBody(key, value, durationSeconds, expiry, contexts);
+        Map<String, Object> body = permissionBody(key, value, durationSeconds, expiry, contexts, modifier);
         HttpRequest request = writeRequest(
                 "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/permissions", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
@@ -465,9 +488,19 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return unsetPermission(idOrName, key, contexts, false, actor, idempotencyKey);
+    }
+
+    public MutationResult unsetPermission(
+            String idOrName,
+            String key,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        String path = "/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
-                + "/permissions" + keyAndContextQuery(requireId(key, "permission"), contexts);
+        String path = appendQueryParam("/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+                + "/permissions" + keyAndContextQuery(requireId(key, "permission"), contexts), tempOnly ? "tempOnly=true" : null);
         HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeUserMutation(request);
     }
@@ -475,27 +508,47 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
     public MutationResult setMeta(
             String idOrName, String key, String value, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return setMeta(idOrName, key, value, 0L, 0L, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setMeta(
+            String idOrName,
+            String key,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        Map<String, Object> body = Map.of("value", value == null ? "" : value);
         HttpRequest request = writeRequest(
                 "/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
                         + "/meta/" + encodePathSegment(requireId(key, "meta key")),
                 actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .PUT(jsonBody(body))
+                .PUT(jsonBody(metaBody(value, durationSeconds, expiry, contexts, modifier)))
                 .build();
         return executeUserMutation(request);
     }
 
     public MutationResult unsetMeta(String idOrName, String key, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return unsetMeta(idOrName, key, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult unsetMeta(
+            String idOrName,
+            String key,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
-                        + "/meta/" + encodePathSegment(requireId(key, "meta key")),
-                actor, idempotencyKey)
-                .DELETE()
-                .build();
+        String path = appendQueryParam("/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+                + "/meta/" + encodePathSegment(requireId(key, "meta key"))
+                + contextQuery(contexts), tempOnly ? "tempOnly=true" : null);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeUserMutation(request);
     }
 
@@ -508,23 +561,46 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setPrefix(idOrName, priority, value, durationSeconds, expiry, contexts, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setPrefix(
+            String idOrName,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/prefixes", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts)))
+                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts, mode, modifier)))
                 .build();
         return executeUserMutation(request);
     }
 
     public MutationResult removePrefix(String idOrName, int priority, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return removePrefix(idOrName, priority, null, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removePrefix(
+            String idOrName,
+            int priority,
+            String value,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/prefixes/" + priority,
-                actor, idempotencyKey)
-                .DELETE()
-                .build();
+        String path = affixDeletePath("/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+                + "/prefixes/" + priority, value, contexts, tempOnly);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeUserMutation(request);
     }
 
@@ -537,23 +613,46 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setSuffix(idOrName, priority, value, durationSeconds, expiry, contexts, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setSuffix(
+            String idOrName,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/suffixes", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts)))
+                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts, mode, modifier)))
                 .build();
         return executeUserMutation(request);
     }
 
     public MutationResult removeSuffix(String idOrName, int priority, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return removeSuffix(idOrName, priority, null, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removeSuffix(
+            String idOrName,
+            int priority,
+            String value,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/suffixes/" + priority,
-                actor, idempotencyKey)
-                .DELETE()
-                .build();
+        String path = affixDeletePath("/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+                + "/suffixes/" + priority, value, contexts, tempOnly);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeUserMutation(request);
     }
 
@@ -681,11 +780,24 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setGroupPermission(name, key, value, durationSeconds, expiry, contexts, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setGroupPermission(
+            String name,
+            String key,
+            boolean value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/permissions", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .POST(jsonBody(permissionBody(key, value, durationSeconds, expiry, contexts)))
+                .POST(jsonBody(permissionBody(key, value, durationSeconds, expiry, contexts, modifier)))
                 .build();
         return executeGroupMutation(request);
     }
@@ -696,9 +808,19 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return unsetGroupPermission(name, key, contexts, false, actor, idempotencyKey);
+    }
+
+    public MutationResult unsetGroupPermission(
+            String name,
+            String key,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        String path = "/v1/groups/" + encodePathSegment(requireId(name, "group"))
-                + "/permissions" + keyAndContextQuery(requireId(key, "permission"), contexts);
+        String path = appendQueryParam("/v1/groups/" + encodePathSegment(requireId(name, "group"))
+                + "/permissions" + keyAndContextQuery(requireId(key, "permission"), contexts), tempOnly ? "tempOnly=true" : null);
         HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeGroupMutation(request);
     }
@@ -739,10 +861,20 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return removeGroupParent(name, parentGroup, contexts, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removeGroupParent(
+            String name,
+            String parentGroup,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        String path = "/v1/groups/" + encodePathSegment(requireId(name, "group"))
+        String path = appendQueryParam("/v1/groups/" + encodePathSegment(requireId(name, "group"))
                 + "/parents/" + encodePathSegment(requireId(parentGroup, "parent group"))
-                + contextQuery(contexts);
+                + contextQuery(contexts), tempOnly ? "tempOnly=true" : null);
         HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeGroupMutation(request);
     }
@@ -750,26 +882,47 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
     public MutationResult setGroupMeta(
             String name, String key, String value, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return setGroupMeta(name, key, value, 0L, 0L, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setGroupMeta(
+            String name,
+            String key,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/groups/" + encodePathSegment(requireId(name, "group"))
                         + "/meta/" + encodePathSegment(requireId(key, "meta key")),
                 actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .PUT(jsonBody(Map.of("value", value == null ? "" : value)))
+                .PUT(jsonBody(metaBody(value, durationSeconds, expiry, contexts, modifier)))
                 .build();
         return executeGroupMutation(request);
     }
 
     public MutationResult unsetGroupMeta(String name, String key, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return unsetGroupMeta(name, key, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult unsetGroupMeta(
+            String name,
+            String key,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/groups/" + encodePathSegment(requireId(name, "group"))
-                        + "/meta/" + encodePathSegment(requireId(key, "meta key")),
-                actor, idempotencyKey)
-                .DELETE()
-                .build();
+        String path = appendQueryParam("/v1/groups/" + encodePathSegment(requireId(name, "group"))
+                + "/meta/" + encodePathSegment(requireId(key, "meta key"))
+                + contextQuery(contexts), tempOnly ? "tempOnly=true" : null);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeGroupMutation(request);
     }
 
@@ -782,23 +935,46 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setGroupPrefix(name, priority, value, durationSeconds, expiry, contexts, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setGroupPrefix(
+            String name,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/prefixes", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts)))
+                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts, mode, modifier)))
                 .build();
         return executeGroupMutation(request);
     }
 
     public MutationResult removeGroupPrefix(String name, int priority, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return removeGroupPrefix(name, priority, null, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removeGroupPrefix(
+            String name,
+            int priority,
+            String value,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/prefixes/" + priority,
-                actor, idempotencyKey)
-                .DELETE()
-                .build();
+        String path = affixDeletePath("/v1/groups/" + encodePathSegment(requireId(name, "group"))
+                + "/prefixes/" + priority, value, contexts, tempOnly);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeGroupMutation(request);
     }
 
@@ -811,23 +987,129 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) throws IOException, InterruptedException {
+        return setGroupSuffix(name, priority, value, durationSeconds, expiry, contexts, null, null, actor, idempotencyKey);
+    }
+
+    public MutationResult setGroupSuffix(
+            String name,
+            int priority,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String mode,
+            String modifier,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
         HttpRequest request = writeRequest(
                 "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/suffixes", actor, idempotencyKey)
                 .header("Content-Type", "application/json")
-                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts)))
+                .POST(jsonBody(affixBody(priority, value, durationSeconds, expiry, contexts, mode, modifier)))
                 .build();
         return executeGroupMutation(request);
     }
 
     public MutationResult removeGroupSuffix(String name, int priority, String actor, String idempotencyKey)
             throws IOException, InterruptedException {
+        return removeGroupSuffix(name, priority, null, null, false, actor, idempotencyKey);
+    }
+
+    public MutationResult removeGroupSuffix(
+            String name,
+            int priority,
+            String value,
+            Map<String, String> contexts,
+            boolean tempOnly,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
         requireWriteToken();
-        HttpRequest request = writeRequest(
-                "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/suffixes/" + priority,
-                actor, idempotencyKey)
-                .DELETE()
+        String path = affixDeletePath("/v1/groups/" + encodePathSegment(requireId(name, "group"))
+                + "/suffixes/" + priority, value, contexts, tempOnly);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
+        return executeGroupMutation(request);
+    }
+
+    public SearchResultRecord search(String query) throws IOException, InterruptedException {
+        HttpRequest request = readRequest("/v1/search?q=" + Contexts.encode(requireId(query, "query"))).GET().build();
+        HttpResponse<String> response = sendExpecting(request, 200);
+        return gson.fromJson(parseObject(response.body(), "search"), SearchResultRecord.class);
+    }
+
+    public BulkUpdateSummaryRecord bulkUpdate(
+            String scope,
+            String action,
+            String field,
+            String value,
+            List<BulkConstraintRecord> constraints,
+            boolean dryRun,
+            String actor,
+            String idempotencyKey) throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("scope", scope == null || scope.isBlank() ? "all" : scope);
+        body.put("action", requireId(action, "action"));
+        if (field != null && !field.isBlank()) body.put("field", field);
+        if (value != null) body.put("value", value);
+        if (constraints != null && !constraints.isEmpty()) body.put("constraints", constraints);
+        body.put("dryRun", dryRun);
+        HttpRequest request = writeRequest("/v1/bulkupdate", actor, idempotencyKey)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
                 .build();
+        HttpResponse<String> response = sendExpecting(request, 200);
+        return gson.fromJson(parseObject(response.body(), "bulkupdate"), BulkUpdateSummaryRecord.class);
+    }
+
+    public MutationResult setUserTrack(
+            String idOrName, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("group", requireId(group, "group"));
+        if (contexts != null && !contexts.isEmpty()) body.put("contexts", contexts);
+        HttpRequest request = writeRequest(
+                "/v1/users/" + encodePathSegment(requireId(idOrName, "user")) + "/tracks/" + encodePathSegment(requireId(track, "track")),
+                actor, idempotencyKey)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        return executeUserMutation(request);
+    }
+
+    public MutationResult clearUserTrack(
+            String idOrName, String track, Map<String, String> contexts, String actor, String idempotencyKey)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        String path = "/v1/users/" + encodePathSegment(requireId(idOrName, "user"))
+                + "/tracks/" + encodePathSegment(requireId(track, "track")) + contextQuery(contexts);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
+        return executeUserMutation(request);
+    }
+
+    public MutationResult setGroupTrack(
+            String name, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("group", requireId(group, "group"));
+        if (contexts != null && !contexts.isEmpty()) body.put("contexts", contexts);
+        HttpRequest request = writeRequest(
+                "/v1/groups/" + encodePathSegment(requireId(name, "group")) + "/tracks/" + encodePathSegment(requireId(track, "track")),
+                actor, idempotencyKey)
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        return executeGroupMutation(request);
+    }
+
+    public MutationResult clearGroupTrack(
+            String name, String track, Map<String, String> contexts, String actor, String idempotencyKey)
+            throws IOException, InterruptedException {
+        requireWriteToken();
+        String path = "/v1/groups/" + encodePathSegment(requireId(name, "group"))
+                + "/tracks/" + encodePathSegment(requireId(track, "track")) + contextQuery(contexts);
+        HttpRequest request = writeRequest(path, actor, idempotencyKey).DELETE().build();
         return executeGroupMutation(request);
     }
 
@@ -1147,37 +1429,57 @@ public final class StonyPermsClient implements SnapshotSource, AutoCloseable {
     }
 
     private static Map<String, Object> permissionBody(
-            String key, boolean value, long durationSeconds, long expiry, Map<String, String> contexts) {
+            String key, boolean value, long durationSeconds, long expiry, Map<String, String> contexts, String modifier) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("key", requireId(key, "permission"));
         body.put("value", value);
-        if (durationSeconds > 0) {
-            body.put("durationSeconds", durationSeconds);
-        }
-        if (expiry > 0) {
-            body.put("expiry", expiry);
-        }
-        if (contexts != null && !contexts.isEmpty()) {
-            body.put("contexts", contexts);
-        }
+        if (durationSeconds > 0) body.put("durationSeconds", durationSeconds);
+        if (expiry > 0) body.put("expiry", expiry);
+        if (contexts != null && !contexts.isEmpty()) body.put("contexts", contexts);
+        if (modifier != null && !modifier.isBlank()) body.put("modifier", modifier.trim());
+        return body;
+    }
+
+    private static Map<String, Object> metaBody(
+            String value, long durationSeconds, long expiry, Map<String, String> contexts, String modifier) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("value", value == null ? "" : value);
+        if (durationSeconds > 0) body.put("durationSeconds", durationSeconds);
+        if (expiry > 0) body.put("expiry", expiry);
+        if (contexts != null && !contexts.isEmpty()) body.put("contexts", contexts);
+        if (modifier != null && !modifier.isBlank()) body.put("modifier", modifier.trim());
         return body;
     }
 
     private static Map<String, Object> affixBody(
-            int priority, String value, long durationSeconds, long expiry, Map<String, String> contexts) {
+            int priority, String value, long durationSeconds, long expiry, Map<String, String> contexts, String mode, String modifier) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("priority", priority);
         body.put("value", value == null ? "" : value);
-        if (durationSeconds > 0) {
-            body.put("durationSeconds", durationSeconds);
-        }
-        if (expiry > 0) {
-            body.put("expiry", expiry);
-        }
-        if (contexts != null && !contexts.isEmpty()) {
-            body.put("contexts", contexts);
-        }
+        if (durationSeconds > 0) body.put("durationSeconds", durationSeconds);
+        if (expiry > 0) body.put("expiry", expiry);
+        if (contexts != null && !contexts.isEmpty()) body.put("contexts", contexts);
+        if (mode != null && !mode.isBlank()) body.put("mode", mode.trim());
+        if (modifier != null && !modifier.isBlank()) body.put("modifier", modifier.trim());
         return body;
+    }
+
+    private static String appendQueryParam(String path, String param) {
+        if (param == null || param.isEmpty()) {
+            return path;
+        }
+        return path + (path.indexOf('?') >= 0 ? "&" : "?") + param;
+    }
+
+    private static String affixDeletePath(String basePath, String value, Map<String, String> contexts, boolean tempOnly) {
+        String path = basePath + contextQuery(contexts);
+        if (value != null && !value.isEmpty()) {
+            path = appendQueryParam(path, "value=" + Contexts.encode(value));
+        }
+        if (tempOnly) {
+            path = appendQueryParam(path, "tempOnly=true");
+        }
+        return path;
     }
 
     private static String contextQuery(Map<String, String> contexts) {
