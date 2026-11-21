@@ -1,115 +1,49 @@
-# Security model
+# Security model (v0.2)
 
 ## Trust boundary
 
-The bridge API is an internal service-to-service interface. It exposes resolved
-permission data, including group names, weights, prefixes, and metadata. Treat
-it like a database read credential, not a public API.
+The StonyPerms HTTP API is an internal service-to-service control interface, not a public endpoint. Read access exposes resolved permission snapshots, group weights, metadata, prefixes, and user records; write access grants full mutating control over users, groups, tracks, reloads, and audit logs. Never expose port `8737` to the public internet.
 
-## Authentication
+## Dual-Tier Authentication & Least Privilege
 
-- One shared bearer token per deployment.
-- Proxy: constant-time comparison (`crypto/subtle`), minimum 16 characters in
-  code, 32+ random characters recommended.
-- Proxy token order: `STONYPERMS_API_TOKEN`, then `api_token_file`, then
-  inline `api_token`.
-- Backend token order: `STONYPERMS_BRIDGE_TOKEN`, then inline `api.token`,
-  then `api.token-file`. When rotating a token file, clear any higher-priority
-  env/inline value or the backend will keep using it.
-- The proxy refuses to start the API without a token. The backend disables
-  itself if it cannot resolve one.
-- Tokens are never placed in URLs, logs, error messages, or API responses.
-- Token files should be mode `0600` and owned by the service user.
+- **Separate Read and Write tiers:**
+  - Read tokens (`STONYPERMS_API_TOKEN` / `api_token_file` on Gate; `STONYPERMS_BRIDGE_TOKEN` / `api.token-file` on bridges) allow read queries, `/v1/check`, and `GET /v1/events` SSE only.
+  - Write tokens (`STONYPERMS_API_WRITE_TOKEN` / `api_write_token_file` on Gate; `STONYPERMS_BRIDGE_WRITE_TOKEN` / `api.write-token-file` on bridges) are opt-in and only accepted when `api_write_enabled = true` on Gate.
+- **No silent fallback & overlap rejection:**
+  - Gate fails closed if `api_write_enabled = true` and the write token fails to load — it disables writes (`writeEnabled = false`) and never accepts a read token for mutations.
+  - `api.New` rejects any configuration where a read token also appears in the write token list.
+  - A read-only token hitting a write route or `GET /v1/logs` fails with `403 insufficient_scope` (or `403 writes_disabled` when `api_write_enabled = false`).
+- **Backends remain least-privilege by default:** `write.enabled` defaults to `false` in both Paper (`config.yml`) and Fabric (`stonyperms-bridge.json`). Only backends that genuinely execute trusted console fulfillment or cross-server admin commands (e.g., PayNow fulfillment on Purpur lobby) should hold a write token; gameplay backends (Survival, Creative) should stay read-only (`write.enabled: false` with no write token on disk) and rely on SSE for instant updates.
 
-Generate tokens with a CSPRNG:
+## Token Handling & Single-Line Bridge Files
 
-```bash
-openssl rand -hex 32
-```
+- Constant-time comparison (`crypto/subtle`) on Gate, minimum 16 characters, 32+ random hex characters (`openssl rand -hex 32`) recommended.
+- Store token files with mode `0600` owned strictly by the service user. Never place tokens in git, URLs, logs, or error responses.
+- **Bridge resolution precedence:**
+  - Read: `STONYPERMS_BRIDGE_TOKEN` env var -> inline `api.token` -> `api.token-file` (`tokenFile` on Fabric).
+  - Write (checked only when `write.enabled: true`): `STONYPERMS_BRIDGE_WRITE_TOKEN` env var -> inline `api.write-token` (`writeToken`) -> `api.write-token-file` (`writeTokenFile`).
+- **Single-line bridge token nuance:** While `gate-stonyperms` accepts up to 4 newline-separated tokens in its proxy token files for zero-downtime rotation, `stonyperms-bridge` (`PaperBridgeConfig` and `FabricBridgeConfig`) reads each backend token file as a single trimmed string (`Files.readString(path).trim()`). Always provision each bridge backend with its own **single-token `0600` file** rather than copying a multi-line proxy rotation file verbatim.
 
-Do not reuse the Gate forwarding secret, a database password, or an operator
-account token.
+## Network & Transport
 
-## Network
+- Default proxy bind: `127.0.0.1:8737`. Non-loopback binds require `api_allow_remote = true`.
+- Remote backends should connect only over Tailscale/WireGuard with host firewall rules allowing backend IPs only, plus TLS (`api_tls_cert` / `api_tls_key` or TLS-terminating reverse proxy) when crossing untrusted hops.
+- Adapters log a warning when configured for plain HTTP against a non-loopback host, disable redirects (`Redirect.NEVER`), and apply bounded timeouts (`connectTimeoutMs = 1500`, `requestTimeoutMs = 2500`).
 
-- Default bind: `127.0.0.1:8737`.
-- Non-loopback binds are rejected unless `api_allow_remote = true`.
-- Preferred remote deployment: Tailscale/WireGuard address, firewall only the
-  backend hosts, no public listener.
-- If traffic crosses an untrusted network, enable TLS with
-  `api_tls_cert`/`api_tls_key`, or terminate TLS in a reverse proxy that
-  forwards the `Authorization` header.
-- The backend warns when it uses plain HTTP to a non-loopback host. It does not
-  silently downgrade.
+## Backend Command & Platform Isolation
 
-## Authorization
+- **Two command permission nodes** (both default `op`):
+  - `stonyperms.bridge.admin`: diagnostics (`status`, `refresh`, `check`), local `reload`, and read-only lookups (`user info`, `group list|info|members`, `track list|info`).
+  - `stonyperms.bridge.write`: cross-server mutations (`user`, `group`, `track`), `log`, and `reload remote`. Mutating `/spb` commands also fail closed whenever `write.enabled: false`.
+- **Fabric `applyToOps` (`true` default) & break-glass:**
+  - When `applyToOps: false`, `FabricBridgeRuntime.isOpBypassed` defers `fabric-permissions-api` checks for server ops (`TriState.DEFAULT`) rather than enforcing StonyPerms grants/denials on ops.
+  - Independently, Fabric `/spb` retains console and `ops.json` (`playerList.isOp(...)`) break-glass access so admins can always inspect or reload a broken bridge.
+  - Fabric `/spb reload` requires `hasAdminPermission`; `/spb reload remote` additionally requires `hasWritePermission` (both admin and write permission plus `write.enabled: true`).
+- **Paper zero-shading plugin isolation:** `paper/build.gradle.kts` compiles against `VaultAPI` and `PlaceholderAPI` via `compileOnly` with `softdepend: [Vault, PlaceholderAPI]` in `plugin.yml`. Neither optional dependency JAR is shaded into the bridge artifact, avoiding classpath pollution and letting Paper isolate optional integrations cleanly.
 
-- Every `/v1/*` route requires the bearer token; there are no per-user scopes.
-- `/healthz` is the only unauthenticated route and returns no data.
-- The API is read-only. It has no create/update/delete routes and does not
-  expose audit logs or storage paths.
-- Backend admin commands (`/spb`) use the Bukkit/Fabric admin permission
-  (`stonyperms.bridge.admin`, default op). On Fabric, console and vanilla ops
-  can always run `/spb` so a broken API can be repaired.
+## Abuse Controls, Idempotency & Auditability
 
-## Data exposure
-
-A snapshot contains:
-
-- UUID, username, primary group;
-- resolved group names/weights/display names;
-- nodes (keys, boolean values, contexts, expiry, source);
-- prefix, suffix, and metadata.
-
-It does not contain:
-
-- other users' data;
-- audit logs;
-- storage files or paths;
-- the token;
-- Gate configuration.
-
-Metadata can contain arbitrary strings set by admins. Do not put secrets in
-StonyPerms metadata or prefixes.
-
-## Fail-closed semantics
-
-- `fail-closed: true` means: if there is no usable snapshot, do not grant
-  StonyPerms-managed permissions. It does not deop players or override the
-  platform's own defaults for nodes StonyPerms never managed.
-- `use-stale-on-error: true` serves the last snapshot for
-  `stale-grace-seconds`. Set the grace to the longest outage you are willing to
-  tolerate with stale grants.
-- A defined `undefined` result is not a failure; it means StonyPerms has no
-  opinion and the platform default applies.
-- Paper ops are managed by StonyPerms when `apply-to-ops: true` (default).
-  Setting it to `false` skips ops entirely and leaves them vanilla; it does not
-  make StonyPerms deny them. Keep a console/vanilla-op break-glass path.
-
-## Availability and abuse
-
-- Proxy: 5 s header timeout, 10 s read, 15 s write, 16 KiB headers, 64 KiB
-  request body, 16 contexts max.
-- Backend: 1.5 s connect / 2.5 s request by default, no redirects, two HTTP
-  worker threads, no network I/O on the server thread.
-- Repeated failures are logged at most every five minutes unless `debug` is on.
-- The API has no rate limiter beyond the HTTP server limits. Keep it on a
-  private network; a hostile local process with the token can read permission
-  data.
-
-## Secret rotation
-
-1. Generate a new token.
-2. Update the proxy token file/environment and restart or reload Gate.
-3. Update all backend token files/environments and restart them.
-4. Old tokens stop working immediately when the proxy restarts.
-
-For zero-downtime rotation, run the new proxy token alongside the old one in a
-future API version; v1 supports one token.
-
-## What this design deliberately does not do
-
-- No write endpoints, so a compromised backend cannot change proxy permissions.
-- No shared database credentials on backends.
-- No plugin-messaging secrets or player-bound channels.
-- No implicit trust based on source IP; the token is always required.
+- **Per-IP rate limiting on Gate:** Default `60/s` burst `120` for reads and `15/s` burst `30` for write/admin routes (`RemoteAddr`-based, ignoring `X-Forwarded-For`), returning `429 rate_limited` + `Retry-After: 1`.
+- **Idempotency & conflict detection:** HTTP writes supporting `Idempotency-Key` verify a SHA-256 digest of canonicalized query parameters and raw JSON body, rejecting payload reuse mismatches with `409 idempotency_conflict`.
+- **Fail-closed user resolution:** User mutation paths reject unknown usernames with `404 user_not_found`; offline UUID synthesis only occurs when explicitly requested via `POST /v1/users` with `"createOffline": true`.
+- **Audit trail:** Gate records `X-StonyPerms-Actor` (defaults on `/spb` to sender username / `"console"`, and on programmatic bridge API calls to `write.default-actor` or `paper:<server>` / `fabric:<server>`) in StonyPerms' audit log and SSE change events.
