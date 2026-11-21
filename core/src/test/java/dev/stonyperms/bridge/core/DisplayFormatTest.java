@@ -20,6 +20,19 @@ class DisplayFormatTest {
         assertEquals("", parts.afterMessage());
     }
 
+
+    @Test
+    void prefersNetworkNicknameFromUserMeta() {
+        UserInfo nicked = new UserInfo("uuid-1", "Andrei", "mvp", false,
+                Map.of("nickname", "&bShadow"), "&b[MVP] ", "");
+
+        assertEquals("&b[MVP] &bShadow", DisplayFormat.formatDisplayName(nicked, "Andrei"));
+
+        DisplayFormat.ChatParts parts = DisplayFormat.formatChatParts(
+                "{prefix}{name}{suffix}&r&7: &f{message}", nicked, "Andrei");
+        assertEquals("&b[MVP] &bShadow&r&7: &f", parts.beforeMessage());
+    }
+
     @Test
     void translatesLegacyCodesAndExtractsTrailingActiveColor() {
         assertEquals("\u00a74[Owner] \u00a7lAndrei & notacode",
