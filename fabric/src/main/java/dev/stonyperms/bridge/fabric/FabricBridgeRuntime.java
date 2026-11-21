@@ -226,10 +226,35 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             api.notifyUserUpdated(id, snapshot);
             MinecraftServer srv = this.server;
             if (srv != null && !closed.get()) {
-                srv.execute(() -> StonyPermsEvents.USER_UPDATED.invoker().onUserUpdated(id, snapshot, prevRev));
+                srv.execute(() -> {
+                    StonyPermsEvents.USER_UPDATED.invoker().onUserUpdated(id, snapshot, prevRev);
+                    resendCommandTree(srv, id);
+                });
             } else {
                 StonyPermsEvents.USER_UPDATED.invoker().onUserUpdated(id, snapshot, prevRev);
             }
+        }
+    }
+
+    /**
+     * Vanilla builds each player's command tree at join time. When the first snapshot for a
+     * session arrives after that, commands gated by permissions are already marked restricted
+     * on the client, so they execute but never autocomplete. Resending the tree after the
+     * snapshot lands makes the full command set available without a reconnect.
+     */
+    private void resendCommandTree(MinecraftServer srv, UUID id) {
+        if (srv == null || id == null || closed.get()) {
+            return;
+        }
+        ServerPlayer player = srv.getPlayerList().getPlayer(id);
+        if (player == null) {
+            return;
+        }
+        try {
+            srv.getCommands().sendCommands(player);
+            logger.debug("Resent command tree to {} after snapshot refresh", player.getScoreboardName());
+        } catch (RuntimeException error) {
+            logger.warn("Failed to resend command tree to {}: {}", player.getScoreboardName(), error.getMessage());
         }
     }
 
