@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "stonyperms-bridge-core",
-  "version": "0.1.0",
+  "version": "${version}",
   "name": "StonyPerms Bridge Core",
   "description": "Platform-neutral StonyPerms HTTP client and snapshot evaluator.",
   "environment": "*",

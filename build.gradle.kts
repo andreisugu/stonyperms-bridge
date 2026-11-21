@@ -1,4 +1,4 @@
-val releaseVersion = providers.gradleProperty("releaseVersion").getOrElse("0.1.0-SNAPSHOT")
+val releaseVersion = providers.gradleProperty("releaseVersion").getOrElse("0.2.0-SNAPSHOT")
 
 allprojects {
     group = "dev.stonyperms"
