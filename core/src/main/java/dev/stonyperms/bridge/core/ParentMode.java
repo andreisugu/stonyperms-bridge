@@ -6,7 +6,9 @@ import java.util.Locale;
 public enum ParentMode {
     ADD,
     SET,
-    ACCUMULATE;
+    ACCUMULATE,
+    REPLACE,
+    DENY;
 
     public String wireName() {
         return name().toLowerCase(Locale.ROOT);

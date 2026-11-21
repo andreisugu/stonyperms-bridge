@@ -114,6 +114,56 @@ class PermissionResolverTest {
         assertEquals(Map.of("blocked.node", false, "some.plugin.perm", true, "missing", true), values);
     }
 
+    @Test
+    void resolvesShorthandBracesParenAndNumericRanges() {
+        Snapshot snapshot = snapshot(
+                List.of(),
+                List.of(
+                        node("essentials.{fly,god}", true, "user", 0, true),
+                        node("plugin.(kick|ban)", true, "user", 0, true),
+                        node("homes.{1-3}", true, "user", 0, true)));
+
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "essentials.fly", Map.of()).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "essentials.god", Map.of()).value());
+        assertEquals(Tri.UNDEFINED, resolver.resolve(snapshot, "essentials.heal", Map.of()).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "plugin.kick", Map.of()).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "plugin.ban", Map.of()).value());
+        assertEquals(Tri.UNDEFINED, resolver.resolve(snapshot, "plugin.mute", Map.of()).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "homes.2", Map.of()).value());
+        assertEquals(Tri.UNDEFINED, resolver.resolve(snapshot, "homes.4", Map.of()).value());
+    }
+
+    @Test
+    void resolvesRegexNodesCaseInsensitively() {
+        Snapshot snapshot = snapshot(
+                List.of(),
+                List.of(node("r=arena\\.\\d+\\.join", true, "user", 0, true)));
+
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "ARENA.42.join", Map.of()).value());
+        assertEquals(Tri.UNDEFINED, resolver.resolve(snapshot, "arena.lobby.join", Map.of()).value());
+    }
+
+    @Test
+    void higherContextSpecificityOverridesLessSpecificMatchesInSameSource() {
+        Map<String, String> lobby = Map.of("server", "lobby");
+        Map<String, String> creative = Map.of("server", "creative");
+        Map<String, String> creativePlot = Map.of("server", "creative", "world", "plot");
+        Snapshot snapshot = snapshot(
+                List.of(new GroupRef("builder", "Builder", 10)),
+                List.of(
+                        node("essentials.fly", false, "user", 0, true),
+                        node("essentials.fly", true, "user", 0, true, creative),
+                        node("plot.*", false, "group:builder", 10, false),
+                        node("plot.*", true, "group:builder", 10, false, creative),
+                        node("plot.*", false, "group:builder", 10, false, creativePlot)));
+
+        assertEquals(Tri.FALSE, resolver.resolve(snapshot, "essentials.fly", lobby).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "essentials.fly", creative).value());
+        assertEquals(Tri.FALSE, resolver.resolve(snapshot, "plot.build", lobby).value());
+        assertEquals(Tri.TRUE, resolver.resolve(snapshot, "plot.build", creative).value());
+        assertEquals(Tri.FALSE, resolver.resolve(snapshot, "plot.build", creativePlot).value());
+    }
+
     private static Snapshot snapshot(List<GroupRef> groups, List<Node> nodes) {
         return new Snapshot(
                 1,

@@ -215,6 +215,144 @@ class BridgeCommandHandlerTest {
         }
     }
 
+
+    @Test
+    void executesPass2ParityCommandsAndTabCompletions() throws Exception {
+        UUID steveId = UUID.randomUUID();
+        List<String> calls = new CopyOnWriteArrayList<>();
+
+        executor = Executors.newSingleThreadExecutor();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            String method = exchange.getRequestMethod();
+            String path = exchange.getRequestURI().getRawPath();
+            String query = exchange.getRequestURI().getRawQuery();
+            String fullPath = query == null || query.isEmpty() ? path : path + "?" + query;
+            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            calls.add(method + " " + fullPath + ":" + body);
+
+            if (path.equals("/v1/search") && method.equals("GET")) {
+                respond(exchange, 200, "{\"revision\":10,\"query\":\"fly\",\"groupHits\":[{\"targetType\":\"group\",\"target\":\"vip\",\"nodeKey\":\"fly.use\",\"value\":true}],\"userHits\":[{\"targetType\":\"user\",\"target\":\"Steve\",\"uuid\":\"" + steveId + "\",\"nodeKey\":\"fly.temp\",\"value\":true}]}");
+            } else if (path.equals("/v1/bulkupdate") && method.equals("POST")) {
+                boolean dryRun = body.contains("\"dryRun\":true");
+                respond(exchange, 200, "{\"dryRun\":" + dryRun + ",\"groupsChanged\":1,\"usersChanged\":2,\"nodesAffected\":3,\"revision\":11}");
+            } else if (path.equals("/v1/reload") && method.equals("POST")) {
+                respond(exchange, 200, "{\"revision\":12,\"reloaded\":true}");
+            } else if (path.equals("/v1/users/Steve") && method.equals("GET")) {
+                respond(exchange, 200, "{\"revision\":12,\"user\":{\"uuid\":\"" + steveId + "\",\"username\":\"Steve\",\"primaryGroup\":\"default\",\"nodes\":[{\"key\":\"essentials.fly\",\"value\":true}]}}");
+            } else if (path.startsWith("/v1/users/")) {
+                respond(exchange, 200, "{\"revision\":13,\"user\":{\"uuid\":\"" + steveId + "\",\"username\":\"Steve\",\"primaryGroup\":\"vip\"}}");
+            } else if (path.startsWith("/v1/groups/")) {
+                respond(exchange, 200, "{\"revision\":14,\"group\":{\"name\":\"vip\",\"weight\":50}}");
+            } else if (path.equals("/v1/tracks/donors") && method.equals("GET")) {
+                respond(exchange, 200, "{\"revision\":15,\"track\":{\"name\":\"donors\",\"groups\":[\"default\",\"vip\"]}}");
+            } else if (path.equals("/v1/tracks") && method.equals("POST")) {
+                respond(exchange, 201, "{\"revision\":16,\"track\":{\"name\":\"staff\",\"groups\":[\"default\",\"vip\"]}}");
+            } else {
+                respond(exchange, 404, "{\"error\":\"not_found\"}");
+            }
+        });
+        server.start();
+
+        URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+        try (StonyPermsClient client = new StonyPermsClient(
+                base, "read-token-0123456789", "write-token-0123456789", Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            DefaultStonyPermsBridgeAPI rwApi = new DefaultStonyPermsBridgeAPI(
+                    new BridgeService(client, new SnapshotCache(60_000), new PermissionResolver(), true, true),
+                    client, executor, true, "console", ignored -> {}, () -> {});
+            FakePlatform platform = new FakePlatform(steveId);
+            BridgeCommandHandler handler = new BridgeCommandHandler(rwApi, platform);
+            FakeSender adminOnly = new FakeSender("Mod", true, false);
+            FakeSender writer = new FakeSender("Admin", true, true);
+
+            // search + permission info require only admin permission
+            handler.execute(adminOnly, "spb", new String[]{"search", "fly"});
+            assertTrue(adminOnly.awaitMessages(2, 5, TimeUnit.SECONDS));
+            assertTrue(adminOnly.messages.stream().anyMatch(m -> m.contains("[G] vip -> +fly.use")));
+
+            FakeSender permInfoSender = new FakeSender("Mod", true, false);
+            handler.execute(permInfoSender, "spb", new String[]{"user", "Steve", "permission", "info"});
+            assertTrue(permInfoSender.awaitMessages(2, 5, TimeUnit.SECONDS));
+            assertTrue(permInfoSender.messages.stream().anyMatch(m -> m.contains("essentials.fly = true")));
+
+            // sync triggers remote reload and local refresh
+            FakeSender syncSender = new FakeSender("Admin", true, true);
+            handler.execute(syncSender, "spb", new String[]{"sync"});
+            assertTrue(syncSender.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(platform.refreshAllCalls.get() >= 1);
+
+            // bulkupdate preview + confirm <code>
+            FakeSender bulkSender = new FakeSender("Admin", true, true);
+            handler.execute(bulkSender, "spb", new String[]{"bulkupdate", "all", "delete", "where", "permission", "~~", "essentials.*"});
+            assertTrue(bulkSender.awaitMessages(2, 5, TimeUnit.SECONDS));
+            String confirmLine = bulkSender.messages.stream().filter(m -> m.contains("confirm ")).findFirst().orElseThrow();
+            String code = confirmLine.replaceAll(".*confirm ([0-9a-f]+).*", "$1");
+            handler.execute(bulkSender, "spb", new String[]{"bulkupdate", "confirm", code});
+            assertTrue(bulkSender.awaitMessages(3, 5, TimeUnit.SECONDS));
+            assertTrue(bulkSender.messages.getLast().contains("Bulk update complete"));
+
+            // bulkupdate --confirm bypasses preview
+            FakeSender directBulk = new FakeSender("Admin", true, true);
+            handler.execute(directBulk, "spb", new String[]{"bulkupdate", "users", "update", "group", "mvp", "group == vip", "--confirm"});
+            assertTrue(directBulk.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("POST /v1/bulkupdate:") && c.contains("\"dryRun\":false") && c.contains("\"mvp\"")));
+
+            // permission settemp + modifier & unsettemp
+            FakeSender permSet = new FakeSender("Admin", true, true);
+            handler.execute(permSet, "spb", new String[]{"user", "Steve", "permission", "settemp", "fly.use", "true", "1h", "accumulate", "server=lobby"});
+            assertTrue(permSet.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.contains("/v1/users/Steve/permissions:") && c.contains("\"modifier\":\"accumulate\"")));
+
+            FakeSender permUnset = new FakeSender("Admin", true, true);
+            handler.execute(permUnset, "spb", new String[]{"user", "Steve", "permission", "unsettemp", "fly.use", "server=lobby"});
+            assertTrue(permUnset.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("DELETE /v1/users/Steve/permissions?") && c.contains("tempOnly=true")));
+
+            // parent settrack, cleartrack, removetemp
+            FakeSender trkSet = new FakeSender("Admin", true, true);
+            handler.execute(trkSet, "spb", new String[]{"user", "Steve", "parent", "settrack", "donors", "mvp", "server=lobby"});
+            assertTrue(trkSet.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("POST /v1/users/Steve/tracks/donors:") && c.contains("\"mvp\"")));
+
+            FakeSender trkClear = new FakeSender("Admin", true, true);
+            handler.execute(trkClear, "spb", new String[]{"user", "Steve", "parent", "cleartrack", "donors"});
+            assertTrue(trkClear.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("DELETE /v1/users/Steve/tracks/donors")));
+
+            FakeSender remTemp = new FakeSender("Admin", true, true);
+            handler.execute(remTemp, "spb", new String[]{"user", "Steve", "parent", "removetemp", "vip"});
+            assertTrue(remTemp.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("DELETE /v1/users/Steve/parents/vip?") && c.contains("tempOnly=true")));
+
+            // meta settemp + modifier, addprefix (mode=add), addtempprefix (mode=add + modifier)
+            FakeSender metaTemp = new FakeSender("Admin", true, true);
+            handler.execute(metaTemp, "spb", new String[]{"user", "Steve", "meta", "settemp", "color", "gold", "30m", "replace", "server=lobby"});
+            assertTrue(metaTemp.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.contains("/v1/users/Steve/meta/color:") && c.contains("\"modifier\":\"replace\"")));
+
+            FakeSender addPref = new FakeSender("Admin", true, true);
+            handler.execute(addPref, "spb", new String[]{"user", "Steve", "meta", "addprefix", "20", "&b[S]", "server=lobby"});
+            assertTrue(addPref.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.contains("/v1/users/Steve/prefixes:") && c.contains("\"mode\":\"add\"")));
+
+            FakeSender addTempPref = new FakeSender("Admin", true, true);
+            handler.execute(addTempPref, "spb", new String[]{"user", "Steve", "meta", "addtempprefix", "30", "&e[T]", "1h", "deny"});
+            assertTrue(addTempPref.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.contains("/v1/users/Steve/prefixes:") && c.contains("\"mode\":\"add\"") && c.contains("\"modifier\":\"deny\"")));
+
+            // track clone + group permission settemp modifier
+            FakeSender trkClone = new FakeSender("Admin", true, true);
+            handler.execute(trkClone, "spb", new String[]{"track", "donors", "clone", "staff"});
+            assertTrue(trkClone.awaitMessages(1, 5, TimeUnit.SECONDS));
+            assertTrue(calls.stream().anyMatch(c -> c.startsWith("POST /v1/tracks:") && c.contains("\"name\":\"staff\"")));
+
+            assertTrue(handler.tabComplete(writer, new String[]{""}).containsAll(List.of("search", "bulkupdate", "sync", "networksync")));
+            assertTrue(handler.tabComplete(writer, new String[]{"user", "Steve", "permission", ""}).containsAll(List.of("info", "unsettemp")));
+            assertTrue(handler.tabComplete(writer, new String[]{"user", "Steve", "parent", ""}).containsAll(List.of("info", "removetemp", "settrack", "cleartrack")));
+            assertTrue(handler.tabComplete(writer, new String[]{"track", "donors", ""}).contains("clone"));
+        }
+    }
+
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.sendResponseHeaders(status, bytes.length);
@@ -255,6 +393,7 @@ class BridgeCommandHandlerTest {
 
     private static final class FakePlatform implements CommandPlatform {
         private final UUID steveId;
+        final AtomicInteger refreshAllCalls = new AtomicInteger();
 
         FakePlatform(UUID steveId) {
             this.steveId = steveId;
@@ -297,6 +436,7 @@ class BridgeCommandHandlerTest {
 
         @Override
         public void requestRefreshAll() {
+            refreshAllCalls.incrementAndGet();
         }
 
         @Override

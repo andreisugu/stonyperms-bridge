@@ -29,7 +29,8 @@
 
 - **Paper (`paper`):** Materializes StonyPerms nodes into a per-player Bukkit `PermissionAttachment`, registers optional `Vault` (`Permission`/`Chat`) and `PlaceholderAPI` (`%stonyperms_*%`) providers with `softdepend: [Vault, PlaceholderAPI]` (zero shading), and exposes `/spb`, `StonyPermsBridgeAPI` via Bukkit `ServicesManager`, and `StonyPermsUserUpdateEvent`.
 - **Fabric (`fabric`):** Registers a [`fabric-permissions-api`](https://github.com/lucko/fabric-permissions-api) provider (`PermissionCheckEvent`, `OptionRequestEvent`, and offline variants), `/spb`, `StonyPermsBridgeMod.api()`, and `StonyPermsEvents.USER_UPDATED` / `CHANGE_RECEIVED`.
-- **Core (`core`):** JDK-only HTTP client (`StonyPermsClient`), SSE subscriber (`StonyPermsEventStream`), revision/ETag-aware `SnapshotCache`, fail-closed policy, Java port of StonyPerms' evaluation order (`PermissionResolver`), and `StonyPermsBridgeAPI`.
+- **Core (`core`):** JDK-only HTTP client (`StonyPermsClient`), SSE subscriber (`StonyPermsEventStream`), revision/ETag-aware `SnapshotCache`, fail-closed policy, Java port of StonyPerms' evaluation order (`PermissionResolver` with Shorthand (`{a,b}`, `(a|b)`, `{1-N}`), regex `r=...`, and context-specificity tie-breaking), and `StonyPermsBridgeAPI`.
+- **Placeholders (Paper):** `%stonyperms_primary_group%` / `%stonyperms_primary_group_name%`, `%stonyperms_primary_group_display%`, `%stonyperms_prefix%`, `%stonyperms_suffix%`, `%stonyperms_groups%` / `%stonyperms_inherited_groups%`, `%stonyperms_highest_group_by_weight%`, `%stonyperms_lowest_group_by_weight%`, `%stonyperms_weight%`, `%stonyperms_meta_<key>%`, `%stonyperms_in_group_<group>%` / `%stonyperms_inherits_group_<group>%`, `%stonyperms_has_permission_<node>%`, `%stonyperms_check_permission_<node>%`, `%stonyperms_expiry_time_<perm>%`, and `%stonyperms_context_<key>%`.
 
 The proxy-side HTTP API lives in [`andreisugu/gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) and is documented in [`docs/http-api.md`](https://github.com/andreisugu/gate-stonyperms/blob/main/docs/http-api.md).
 
@@ -111,8 +112,8 @@ Outputs:
 
 Both platforms expose `/spb` with two distinct permissions (both default `op`):
 
-- **`stonyperms.bridge.admin`** — `status`, `refresh [player]`, `check <player> <permission>`, `reload` (local bridge reload), `user <player> info`, `group list|<name> info|members`, `track list|<name> info`.
-- **`stonyperms.bridge.write`** (additionally requires `write.enabled: true` and a write token) — `user <player> <group|parent|primarygroup|permission|meta|promote|demote|editor|clear> ...`, `group <name> <create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix|editor> ...`, `track <name> <create|delete|set|append|remove> ...`, `editor [filter]`, `applyedits <code>`, `tree [root]`, `verbose paste`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
+- **`stonyperms.bridge.admin`** — `status`, `refresh [player]`, `check <player> <permission>`, `search <query> [page]`, `reload` (local bridge reload), `user <player> <info|permission info|parent info>`, `group list|<name> <info|members|permission info|parent info>`, `track list|<name> info`.
+- **`stonyperms.bridge.write`** (additionally requires `write.enabled: true` and a write token) — `user <player> <group|parent|primarygroup|permission|meta|promote|demote|editor|clear> ...` (including `unsettemp`, `removetemp`, `settrack`, `cleartrack`, temp modifiers `accumulate|replace|deny`, `addprefix`/`addtempprefix`), `group <name> <create|delete|setweight|setdisplayname|permission|parent|meta|prefix|suffix|editor> ...`, `track <name> <create|delete|set|append|remove|clone> ...`, `bulkupdate <all|users|groups> <update|delete> ...`, `sync` / `networksync`, `editor [filter]`, `applyedits <code>`, `tree [root]`, `verbose paste`, `log [limit] [targetType=] [target=] [actor=]`, and `reload remote`.
 
 > Running `/spb editor` on Paper collects every registered plugin permission node from `Bukkit.getPluginManager().getPermissions()` and live world names automatically, opening [StonyPermsWeb](https://andreisugu.github.io/gate-stonyperms/) with clickable Adventure URLs in chat.
 
@@ -148,7 +149,7 @@ See [`docs/limitations.md`](docs/limitations.md) for platform boundaries (Bukkit
 
 | Project | Role | Stack |
 | :--- | :--- | :--- |
-| [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) | LuckPerms-style permissions, contexts, tracks & v0.2 R/W HTTP + SSE API | `Go 1.26` |
+| [`gate-stonyperms`](https://github.com/andreisugu/gate-stonyperms) | Context-aware permissions, tracks, Web UI & v0.2 R/W HTTP + SSE API | `Go 1.26` |
 | **[`stonyperms-bridge`](https://github.com/andreisugu/stonyperms-bridge)** *(this repo)* | Paper & Fabric permission adapters, live SSE, `/spb` commands, Vault & PAPI | `Java 25` |
 | [`gate-bettertab`](https://github.com/andreisugu/gate-bettertab) | Animated RGB / MiniMessage TAB lists, server groups, weights & placeholders | `Go 1.26` |
 | [`gate-discord4gate`](https://github.com/andreisugu/gate-discord4gate) | Bidirectional Discord <> Minecraft chat, slash commands & webhook avatars | `Go 1.26` |

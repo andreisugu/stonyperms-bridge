@@ -1,6 +1,9 @@
 package dev.stonyperms.bridge.api;
 
 import dev.stonyperms.bridge.core.BatchOp;
+import dev.stonyperms.bridge.core.BulkConstraintRecord;
+import dev.stonyperms.bridge.core.BulkUpdateSummaryRecord;
+import dev.stonyperms.bridge.core.SearchResultRecord;
 import dev.stonyperms.bridge.core.BridgeService;
 import dev.stonyperms.bridge.core.ChangeEvent;
 import dev.stonyperms.bridge.core.CheckResult;
@@ -244,6 +247,11 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
         return supplyAsync(client::fetchHealth);
     }
 
+    @Override
+    public CompletableFuture<SearchResultRecord> search(String query) {
+        return supplyAsync(() -> client.search(query));
+    }
+
     // -------------------------------------------------------------------------
     // Cross-server writes & admin
     // -------------------------------------------------------------------------
@@ -303,8 +311,14 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
     @Override
     public CompletableFuture<MutationResult> removeParent(
             String idOrName, String group, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return removeParent(idOrName, group, contexts, false, actor, idempotencyKey);
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removeParent(
+            String idOrName, String group, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
         return writeUserAsync(() -> client.removeParent(
-                idOrName, group, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
+                idOrName, group, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
     }
 
     @Override
@@ -324,23 +338,57 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
             Map<String, String> contexts,
             String actor,
             String idempotencyKey) {
+        return setPermission(idOrName, key, value, durationSeconds, expiry, contexts, null, actor, idempotencyKey);
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setPermission(
+            String idOrName,
+            String key,
+            boolean value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
         return writeUserAsync(() -> client.setPermission(
                 idOrName, key, value, durationSeconds, expiry, safeContexts(contexts),
-                effectiveActor(actor), idempotencyKey));
+                modifier, effectiveActor(actor), idempotencyKey));
     }
 
     @Override
     public CompletableFuture<MutationResult> unsetPermission(
             String idOrName, String key, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return unsetPermission(idOrName, key, contexts, false, actor, idempotencyKey);
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> unsetPermission(
+            String idOrName, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
         return writeUserAsync(() -> client.unsetPermission(
-                idOrName, key, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
+                idOrName, key, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
     }
 
     @Override
     public CompletableFuture<MutationResult> setMeta(
             String idOrName, String key, String value, String actor, String idempotencyKey) {
+        return setMeta(idOrName, key, value, 0L, 0L, null, null, actor, idempotencyKey);
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setMeta(
+            String idOrName,
+            String key,
+            String value,
+            long durationSeconds,
+            long expiry,
+            Map<String, String> contexts,
+            String modifier,
+            String actor,
+            String idempotencyKey) {
         return writeUserAsync(() -> client.setMeta(
-                idOrName, key, value, effectiveActor(actor), idempotencyKey));
+                idOrName, key, value, durationSeconds, expiry, safeContexts(contexts), modifier, effectiveActor(actor), idempotencyKey));
     }
 
     @Override
@@ -642,6 +690,136 @@ public final class DefaultStonyPermsBridgeAPI implements StonyPermsBridgeAPI {
             return writesDisabledFailure();
         }
         return supplyAsync(() -> client.createVerboseSession(effectiveActor(actor), commandAlias));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> unsetMeta(
+            String idOrName, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.unsetMeta(idOrName, key, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setPrefix(
+            String idOrName, int priority, String value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String mode, String modifier, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.setPrefix(idOrName, priority, value, durationSeconds, expiry, safeContexts(contexts), mode, modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removePrefix(
+            String idOrName, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.removePrefix(idOrName, priority, value, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setSuffix(
+            String idOrName, int priority, String value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String mode, String modifier, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.setSuffix(idOrName, priority, value, durationSeconds, expiry, safeContexts(contexts), mode, modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removeSuffix(
+            String idOrName, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.removeSuffix(idOrName, priority, value, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setGroupPermission(
+            String name, String key, boolean value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String modifier, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.setGroupPermission(name, key, value, durationSeconds, expiry, safeContexts(contexts), modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> unsetGroupPermission(
+            String name, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.unsetGroupPermission(name, key, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removeGroupParent(
+            String name, String parentGroup, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.removeGroupParent(name, parentGroup, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setGroupMeta(
+            String name, String key, String value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String modifier, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.setGroupMeta(name, key, value, durationSeconds, expiry, safeContexts(contexts), modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> unsetGroupMeta(
+            String name, String key, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.unsetGroupMeta(name, key, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setGroupPrefix(
+            String name, int priority, String value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String mode, String modifier, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.setGroupPrefix(name, priority, value, durationSeconds, expiry, safeContexts(contexts), mode, modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removeGroupPrefix(
+            String name, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.removeGroupPrefix(name, priority, value, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setGroupSuffix(
+            String name, int priority, String value, long durationSeconds, long expiry,
+            Map<String, String> contexts, String mode, String modifier, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.setGroupSuffix(name, priority, value, durationSeconds, expiry, safeContexts(contexts), mode, modifier, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> removeGroupSuffix(
+            String name, int priority, String value, Map<String, String> contexts, boolean tempOnly, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.removeGroupSuffix(name, priority, value, safeContexts(contexts), tempOnly, effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<BulkUpdateSummaryRecord> bulkUpdate(
+            String scope, String action, String field, String value,
+            List<BulkConstraintRecord> constraints, boolean dryRun, String actor, String idempotencyKey) {
+        if (!isWriteEnabled()) {
+            return writesDisabledFailure();
+        }
+        return supplyAsync(() -> {
+            BulkUpdateSummaryRecord summary = client.bulkUpdate(scope, action, field, value, constraints, dryRun, effectiveActor(actor), idempotencyKey);
+            if (!dryRun) {
+                globalRefreshHook.run();
+            }
+            return summary;
+        });
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setUserTrack(
+            String idOrName, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.setUserTrack(idOrName, track, group, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> clearUserTrack(
+            String idOrName, String track, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return writeUserAsync(() -> client.clearUserTrack(idOrName, track, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> setGroupTrack(
+            String name, String track, String group, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.setGroupTrack(name, track, group, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
+    }
+
+    @Override
+    public CompletableFuture<MutationResult> clearGroupTrack(
+            String name, String track, Map<String, String> contexts, String actor, String idempotencyKey) {
+        return writeGlobalAsync(() -> client.clearGroupTrack(name, track, safeContexts(contexts), effectiveActor(actor), idempotencyKey));
     }
 
     // -------------------------------------------------------------------------

@@ -16,11 +16,13 @@ import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -76,6 +78,56 @@ class StonyPermsPlaceholderExpansionTest {
             when(offline.isOnline()).thenReturn(false);
             assertEquals("default", expansion.onRequest(offline, "primary_group"));
             assertEquals("0", expansion.onRequest(offline, "weight"));
+        }
+    }
+
+    @Test
+    void resolvesExtendedPlaceholdersAndExpiry() {
+        UUID id = UUID.randomUUID();
+        Map<String, String> onlineCtx = Map.of("server", "lobby", "world", "hub");
+        long futureExpiry = Instant.now().getEpochSecond() + 3600;
+
+        SnapshotCache cache = new SnapshotCache(60_000);
+        Snapshot snap = new Snapshot(
+                1, 5, "", 30,
+                new UserInfo(id.toString(), "Alex", "vip", false, Map.of(), "&a[VIP]", ""),
+                List.of(
+                        new GroupRef("vip", "&aVIP+", 50),
+                        new GroupRef("builder", "&6Builder", 20),
+                        new GroupRef("default", "Default", 0)),
+                List.of(
+                        new Node("lobby.fly", true, onlineCtx, 0, "group:vip", 50, false),
+                        new Node("temp.boost", true, onlineCtx, futureExpiry, "user", 0, true)));
+        cache.put(new SnapshotCache.Key(id, Contexts.key(onlineCtx)), snap, null, System.currentTimeMillis());
+
+        try (StonyPermsClient client = new StonyPermsClient(
+                URI.create("http://127.0.0.1:8737"), "read-token-0123456789", Duration.ofSeconds(1), Duration.ofSeconds(2))) {
+            DefaultStonyPermsBridgeAPI api = new DefaultStonyPermsBridgeAPI(
+                    new BridgeService(client, cache, new PermissionResolver(), true, true),
+                    client, Runnable::run, false, "paper", ignored -> {}, () -> {});
+
+            StonyPermsPlaceholderExpansion expansion = new StonyPermsPlaceholderExpansion(
+                    api, "0.2.0-SNAPSHOT", "StonyPermsBridge",
+                    p -> onlineCtx, Map.of("server", "lobby"));
+
+            Player online = mock(Player.class);
+            when(online.getUniqueId()).thenReturn(id);
+            when(online.isOnline()).thenReturn(true);
+            when(online.getPlayer()).thenReturn(online);
+
+            assertEquals("vip", expansion.onRequest(online, "primary_group_name"));
+            assertEquals("vip,builder,default", expansion.onRequest(online, "inherited_groups"));
+            assertEquals("vip", expansion.onRequest(online, "highest_group_by_weight"));
+            assertEquals("default", expansion.onRequest(online, "lowest_group_by_weight"));
+            assertEquals("true", expansion.onRequest(online, "inherits_group_builder"));
+            assertEquals("false", expansion.onRequest(online, "inherits_group_admin"));
+            assertEquals("true", expansion.onRequest(online, "check_permission_lobby.fly"));
+            assertEquals("undefined", expansion.onRequest(online, "check_permission_unknown.perm"));
+            assertEquals("", expansion.onRequest(online, "expiry_time_lobby.fly"));
+            assertFalse(expansion.onRequest(online, "expiry_time_temp.boost").isEmpty());
+            assertEquals("lobby", expansion.onRequest(online, "context_server"));
+            assertEquals("hub", expansion.onRequest(online, "context_WORLD"));
+            assertEquals("", expansion.onRequest(online, "context_missing"));
         }
     }
 }

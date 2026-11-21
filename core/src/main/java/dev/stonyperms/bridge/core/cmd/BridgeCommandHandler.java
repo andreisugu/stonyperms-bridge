@@ -2,13 +2,13 @@ package dev.stonyperms.bridge.core.cmd;
 
 import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
 import dev.stonyperms.bridge.core.ApiException;
+import dev.stonyperms.bridge.core.BulkConstraintRecord;
+import dev.stonyperms.bridge.core.BulkUpdateSummaryRecord;
 import dev.stonyperms.bridge.core.CheckResult;
-import dev.stonyperms.bridge.core.EditorApplyResult;
-import dev.stonyperms.bridge.core.EditorSessionResult;
-import dev.stonyperms.bridge.core.TreeSessionResult;
-import dev.stonyperms.bridge.core.VerboseSessionResult;
 import dev.stonyperms.bridge.core.ContextParser;
 import dev.stonyperms.bridge.core.DurationParser;
+import dev.stonyperms.bridge.core.EditorApplyResult;
+import dev.stonyperms.bridge.core.EditorSessionResult;
 import dev.stonyperms.bridge.core.GroupMember;
 import dev.stonyperms.bridge.core.GroupRecord;
 import dev.stonyperms.bridge.core.LogEntry;
@@ -17,22 +17,30 @@ import dev.stonyperms.bridge.core.Node;
 import dev.stonyperms.bridge.core.ParentEntry;
 import dev.stonyperms.bridge.core.ParentMode;
 import dev.stonyperms.bridge.core.PriorityMeta;
+import dev.stonyperms.bridge.core.SearchHitRecord;
+import dev.stonyperms.bridge.core.SearchResultRecord;
 import dev.stonyperms.bridge.core.TrackActionResult;
 import dev.stonyperms.bridge.core.TrackRecord;
+import dev.stonyperms.bridge.core.TreeSessionResult;
 import dev.stonyperms.bridge.core.UserRecord;
+import dev.stonyperms.bridge.core.VerboseSessionResult;
 
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Function;
 
@@ -43,9 +51,15 @@ public final class BridgeCommandHandler {
 
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneOffset.UTC);
+    private static final long BULK_CONFIRM_TTL_MS = 60_000L;
+    private static final int INFO_PER_PAGE = 15;
+    private static final Set<String> MODIFIERS = Set.of("accumulate", "replace", "deny");
+    private static final Set<String> BULK_OPERATORS = Set.of("==", "!=", "~~", "!~");
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final StonyPermsBridgeAPI api;
     private final CommandPlatform platform;
+    private final ConcurrentHashMap<String, PendingBulk> pendingBulkUpdates = new ConcurrentHashMap<>();
 
     public BridgeCommandHandler(StonyPermsBridgeAPI api, CommandPlatform platform) {
         this.api = Objects.requireNonNull(api, "api");
@@ -82,8 +96,23 @@ public final class BridgeCommandHandler {
                 handleCheck(sender, label, args);
                 return true;
             }
+            case "search" -> {
+                if (!requireAdmin(sender)) return true;
+                handleSearch(sender, label, args);
+                return true;
+            }
             case "reload" -> {
                 handleReload(sender, args);
+                return true;
+            }
+            case "sync", "networksync" -> {
+                if (!requireWrite(sender)) return true;
+                handleSync(sender);
+                return true;
+            }
+            case "bulkupdate" -> {
+                if (!requireWrite(sender)) return true;
+                handleBulkUpdate(sender, label, args);
                 return true;
             }
             case "user" -> {
@@ -135,7 +164,7 @@ public final class BridgeCommandHandler {
     }
 
     // -------------------------------------------------------------------------
-    // Basic diagnostics
+    // Basic diagnostics & network operations
     // -------------------------------------------------------------------------
 
     private void handleRefresh(Object sender, List<String> args) {
@@ -197,6 +226,237 @@ public final class BridgeCommandHandler {
         }
     }
 
+    private void handleSync(Object sender) {
+        String actor = platform.actorName(sender);
+        api.triggerRemoteReload(actor, null).whenComplete((result, error) -> {
+            if (error != null) {
+                platform.sendMessage(sender, "Sync failed: " + formatError(error));
+            } else {
+                platform.requestRefreshAll();
+                platform.sendMessage(sender, "Synced StonyPerms proxy & local cache (revision " + result.revision() + ")");
+            }
+        });
+    }
+
+    private void handleSearch(Object sender, String label, List<String> args) {
+        if (args.size() < 2) {
+            platform.sendMessage(sender, "Usage: /" + label + " search <permission|group.<group>> [page]");
+            return;
+        }
+        int requestedPage = 1;
+        String query;
+        if (args.size() >= 3) {
+            int parsed = parsePositiveInt(args.getLast(), -1);
+            if (parsed > 0) {
+                requestedPage = parsed;
+                query = joinArgs(args.subList(0, args.size() - 1), 1);
+            } else {
+                query = joinArgs(args, 1);
+            }
+        } else {
+            query = args.get(1);
+        }
+        int pageNum = requestedPage;
+        api.search(query).whenComplete((SearchResultRecord result, Throwable error) -> {
+            if (error != null) {
+                platform.sendMessage(sender, "Search failed: " + formatError(error));
+                return;
+            }
+            List<SearchHitRecord> hits = new ArrayList<>(result.groupHits().size() + result.userHits().size());
+            hits.addAll(result.groupHits());
+            hits.addAll(result.userHits());
+            int total = hits.size();
+            int totalPages = Math.max(1, (total + INFO_PER_PAGE - 1) / INFO_PER_PAGE);
+            int page = Math.min(pageNum, totalPages);
+            platform.sendMessage(sender, "Search '" + result.query() + "' (Page " + page + "/" + totalPages + " - " + total + " hits):");
+            if (total == 0) {
+                platform.sendMessage(sender, "  (no matching permissions or parents found)");
+                return;
+            }
+            int start = (page - 1) * INFO_PER_PAGE;
+            int end = Math.min(total, start + INFO_PER_PAGE);
+            long nowEpoch = Instant.now().getEpochSecond();
+            for (int i = start; i < end; i++) {
+                SearchHitRecord h = hits.get(i);
+                String tag = "user".equalsIgnoreCase(h.targetType()) ? "[U] " + h.target() : "[G] " + h.target();
+                String sign = h.value() ? "+" : "-";
+                String exp = formatExpirySuffix(h.expiry(), nowEpoch);
+                String ctx = h.contexts().isEmpty() ? "" : " " + h.contexts();
+                platform.sendMessage(sender, "  " + tag + " -> " + sign + h.nodeKey() + exp + ctx);
+            }
+        });
+    }
+
+    private void handleBulkUpdate(Object sender, String label, List<String> args) {
+        if (args.size() < 2) {
+            sendBulkUsage(sender, label);
+            return;
+        }
+        String actor = platform.actorName(sender);
+        if (args.get(1).equalsIgnoreCase("confirm")) {
+            if (args.size() < 3) {
+                platform.sendMessage(sender, "Usage: /" + label + " bulkupdate confirm <code>");
+                return;
+            }
+            PendingBulk entry = takePendingBulk(args.get(2));
+            if (entry == null) {
+                platform.sendMessage(sender, "Invalid or expired confirmation code (codes expire after 60s).");
+                return;
+            }
+            api.bulkUpdate(entry.scope(), entry.action(), entry.field(), entry.value(), entry.constraints(), false, actor, null)
+                    .whenComplete((summary, error) -> reportBulkSummary(sender, summary, error));
+            return;
+        }
+
+        if (args.size() < 3) {
+            sendBulkUsage(sender, label);
+            return;
+        }
+        String scope = args.get(1).toLowerCase(Locale.ROOT);
+        if (!scope.equals("all") && !scope.equals("users") && !scope.equals("groups")) {
+            platform.sendMessage(sender, "Invalid scope '" + args.get(1) + "'. Expected all|users|groups");
+            return;
+        }
+        String action = args.get(2).toLowerCase(Locale.ROOT);
+        if (!action.equals("update") && !action.equals("delete")) {
+            platform.sendMessage(sender, "Invalid action '" + args.get(2) + "'. Expected update|delete");
+            return;
+        }
+
+        boolean confirmNow = false;
+        List<String> filtered = new ArrayList<>();
+        for (int i = 3; i < args.size(); i++) {
+            String tok = args.get(i);
+            if (tok.equalsIgnoreCase("--confirm")) {
+                confirmNow = true;
+            } else {
+                filtered.add(tok);
+            }
+        }
+
+        String field = "";
+        String value = "";
+        int constraintStart = 0;
+        if (action.equals("update")) {
+            if (filtered.size() < 2) {
+                platform.sendMessage(sender, "Usage: /" + label + " bulkupdate <all|users|groups> update <field> <value> [where <constraints...>] [--confirm]");
+                return;
+            }
+            field = filtered.get(0);
+            value = filtered.get(1);
+            constraintStart = 2;
+        }
+
+        List<BulkConstraintRecord> constraints;
+        try {
+            constraints = parseBulkConstraints(filtered.subList(constraintStart, filtered.size()));
+        } catch (IllegalArgumentException error) {
+            platform.sendMessage(sender, "Invalid bulkupdate constraint: " + error.getMessage());
+            return;
+        }
+
+        if (confirmNow) {
+            api.bulkUpdate(scope, action, field, value, constraints, false, actor, null)
+                    .whenComplete((summary, error) -> reportBulkSummary(sender, summary, error));
+            return;
+        }
+
+        String finalField = field;
+        String finalValue = value;
+        api.bulkUpdate(scope, action, field, value, constraints, true, actor, null)
+                .whenComplete((preview, error) -> {
+                    if (error != null) {
+                        platform.sendMessage(sender, "Bulk update preview failed: " + formatError(error));
+                        return;
+                    }
+                    if (preview.nodesAffected() == 0) {
+                        platform.sendMessage(sender, "Bulk update preview: 0 matching nodes found; nothing to change.");
+                        return;
+                    }
+                    String code = storePendingBulk(scope, action, finalField, finalValue, constraints);
+                    platform.sendMessage(sender, String.format(
+                            "Bulk update preview (expires in 60s): %d groups, %d users, %d nodes matched.",
+                            preview.groupsChanged(), preview.usersChanged(), preview.nodesAffected()));
+                    platform.sendMessage(sender, "Run /" + label + " bulkupdate confirm " + code + " to apply.");
+                });
+    }
+
+    private void reportBulkSummary(Object sender, BulkUpdateSummaryRecord summary, Throwable error) {
+        if (error != null) {
+            platform.sendMessage(sender, "Bulk update failed: " + formatError(error));
+            return;
+        }
+        platform.sendMessage(sender, String.format(
+                "Bulk update complete (rev #%d): %d groups, %d users, %d nodes updated",
+                summary.revision(), summary.groupsChanged(), summary.usersChanged(), summary.nodesAffected()));
+    }
+
+    private void sendBulkUsage(Object sender, String label) {
+        platform.sendMessage(sender,
+                "Usage: /" + label + " bulkupdate <all|users|groups> <update <field> <value>|delete> [where <field> <==|!=|~~|!~> <pattern>...] [--confirm] | confirm <code>");
+    }
+
+    private String storePendingBulk(
+            String scope, String action, String field, String value, List<BulkConstraintRecord> constraints) {
+        byte[] bytes = new byte[3];
+        RANDOM.nextBytes(bytes);
+        String code = HexFormat.of().formatHex(bytes);
+        long nowMs = System.currentTimeMillis();
+        pruneExpiredBulk(nowMs);
+        pendingBulkUpdates.put(code, new PendingBulk(scope, action, field, value, constraints, nowMs + BULK_CONFIRM_TTL_MS));
+        return code;
+    }
+
+    private PendingBulk takePendingBulk(String code) {
+        String key = code == null ? "" : code.trim().toLowerCase(Locale.ROOT);
+        long nowMs = System.currentTimeMillis();
+        pruneExpiredBulk(nowMs);
+        PendingBulk entry = pendingBulkUpdates.remove(key);
+        if (entry == null || nowMs >= entry.expiresAtMillis()) {
+            return null;
+        }
+        return entry;
+    }
+
+    private void pruneExpiredBulk(long nowMs) {
+        pendingBulkUpdates.entrySet().removeIf(e -> nowMs >= e.getValue().expiresAtMillis());
+    }
+
+    private static List<BulkConstraintRecord> parseBulkConstraints(List<String> tokens) {
+        List<BulkConstraintRecord> out = new ArrayList<>();
+        int i = 0;
+        if (i < tokens.size() && tokens.get(i).equalsIgnoreCase("where")) {
+            i++;
+        }
+        while (i < tokens.size()) {
+            String tok = tokens.get(i).trim();
+            if (tok.equalsIgnoreCase("and")) {
+                i++;
+                continue;
+            }
+            String[] parts = tok.split("\\s+");
+            if (parts.length == 3) {
+                validateConstraintOp(parts[1]);
+                out.add(new BulkConstraintRecord(parts[0], parts[1], parts[2]));
+                i++;
+            } else if (parts.length == 1 && i + 2 < tokens.size()) {
+                validateConstraintOp(tokens.get(i + 1));
+                out.add(new BulkConstraintRecord(tokens.get(i), tokens.get(i + 1), tokens.get(i + 2)));
+                i += 3;
+            } else {
+                throw new IllegalArgumentException(
+                        "Expected '<field> <==|!=|~~|!~> <pattern>' near '" + tokens.get(i) + "'");
+            }
+        }
+        return out;
+    }
+
+    private static void validateConstraintOp(String op) {
+        if (!BULK_OPERATORS.contains(op)) {
+            throw new IllegalArgumentException("Unsupported operator '" + op + "' (expected ==|!=|~~|!~)");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // /spb user <target> ...
     // -------------------------------------------------------------------------
@@ -225,6 +485,19 @@ public final class BridgeCommandHandler {
             return;
         }
 
+        switch (action) {
+            case "parent", "parents", "group", "groups" -> {
+                handleParentAction(sender, label, true, target, args);
+                return;
+            }
+            case "permission", "perm", "permissions" -> {
+                handlePermissionAction(sender, label, true, target, args);
+                return;
+            }
+            default -> {
+            }
+        }
+
         if (!requireWrite(sender)) return;
         String actor = platform.actorName(sender);
 
@@ -233,7 +506,6 @@ public final class BridgeCommandHandler {
                 handleEditor(sender, label, "user", target, "");
                 return;
             }
-            case "parent", "parents", "group", "groups" -> handleUserParent(sender, label, target, actor, args);
             case "primarygroup", "setprimarygroup" -> {
                 if (args.size() < 4) {
                     platform.sendMessage(sender, "Usage: /" + label + " user " + target + " primarygroup <group>");
@@ -243,8 +515,7 @@ public final class BridgeCommandHandler {
                 withOnlineAutoEnsure(target, actor, id -> api.setPrimaryGroup(id, group, actor, null))
                         .whenComplete((res, err) -> reportUserMutation(sender, target, "Set primary group to '" + group + "'", res, err));
             }
-            case "permission", "perm", "permissions" -> handleUserPermission(sender, label, target, actor, args);
-            case "meta" -> handleUserMeta(sender, label, target, actor, args);
+            case "meta" -> handleMetaAction(sender, label, true, target, actor, args);
             case "promote" -> {
                 if (args.size() < 4) {
                     platform.sendMessage(sender, "Usage: /" + label + " user " + target + " promote <track>");
@@ -283,146 +554,7 @@ public final class BridgeCommandHandler {
                         .whenComplete((res, err) -> reportUserMutation(sender, target, "Cleared user (" + scope + ")", res, err));
             }
             default -> platform.sendMessage(sender,
-                    "Usage: /" + label + " user <player> <info|parent|group|permission|meta|promote|demote|clear>");
-        }
-    }
-
-    private void handleUserParent(
-            Object sender, String label, String target, String actor, List<String> args) {
-        if (args.size() < 5) {
-            platform.sendMessage(sender,
-                    "Usage: /" + label + " user " + target + " group <add|addtemp|accumulate|set|remove|switchprimarygroup> <group> [duration] [contexts...]");
-            return;
-        }
-        String sub = args.get(3).toLowerCase(Locale.ROOT);
-        String group = args.get(4);
-        try {
-            switch (sub) {
-                case "switchprimarygroup", "setprimary" -> withOnlineAutoEnsure(target, actor, id -> api.setPrimaryGroup(id, group, actor, null))
-                        .whenComplete((res, err) -> reportUserMutation(sender, target, "Primary group set to '" + group + "'", res, err));
-                case "remove" -> {
-                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
-                    withOnlineAutoEnsure(target, actor, id -> api.removeParent(id, group, contexts, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(sender, target, "Removed group '" + group + "'", res, err));
-                }
-                case "add", "addtemp", "accumulate", "set" -> {
-                    ParentMode mode = switch (sub) {
-                        case "set" -> ParentMode.SET;
-                        case "accumulate" -> ParentMode.ACCUMULATE;
-                        default -> ParentMode.ADD;
-                    };
-                    boolean requireDuration = sub.equals("addtemp") || sub.equals("accumulate");
-                    DurationAndContexts dc = parseOptionalDurationAndContexts(args, 5, requireDuration);
-                    withOnlineAutoEnsure(target, actor, id -> api.addParent(
-                            id, group, mode, dc.durationSeconds, 0L, dc.contexts, false, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(
-                                    sender, target,
-                                    "Updated group '" + group + "' (" + mode.wireName() + ", "
-                                            + DurationParser.formatDuration(dc.durationSeconds) + ")",
-                                    res, err));
-                }
-                default -> platform.sendMessage(sender,
-                        "Unknown group action '" + sub + "'. Expected add|addtemp|accumulate|set|remove|switchprimarygroup");
-            }
-        } catch (IllegalArgumentException error) {
-            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
-        }
-    }
-
-    private void handleUserPermission(
-            Object sender, String label, String target, String actor, List<String> args) {
-        if (args.size() < 5) {
-            platform.sendMessage(sender,
-                    "Usage: /" + label + " user " + target + " permission <set|settemp|unset> <node> [true|false] [duration] [contexts...]");
-            return;
-        }
-        String sub = args.get(3).toLowerCase(Locale.ROOT);
-        String key = args.get(4);
-        try {
-            switch (sub) {
-                case "set", "settemp" -> {
-                    boolean requireDuration = sub.equals("settemp");
-                    PermArgs parsed = parsePermArgs(args, 5, requireDuration);
-                    withOnlineAutoEnsure(target, actor, id -> api.setPermission(
-                            id, key, parsed.value, parsed.durationSeconds, 0L, parsed.contexts, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(
-                                    sender, target,
-                                    "Set permission '" + key + "' = " + parsed.value + " ("
-                                            + DurationParser.formatDuration(parsed.durationSeconds) + ")",
-                                    res, err));
-                }
-                case "unset" -> {
-                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
-                    withOnlineAutoEnsure(target, actor, id -> api.unsetPermission(id, key, contexts, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(sender, target, "Unset permission '" + key + "'", res, err));
-                }
-                default -> platform.sendMessage(sender, "Unknown permission action '" + sub + "'. Expected set|settemp|unset");
-            }
-        } catch (IllegalArgumentException error) {
-            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
-        }
-    }
-
-    private void handleUserMeta(
-            Object sender, String label, String target, String actor, List<String> args) {
-        if (args.size() < 5) {
-            platform.sendMessage(sender,
-                    "Usage: /" + label + " user " + target + " meta <set|unset|setprefix|removeprefix|setsuffix|removesuffix> ...");
-            return;
-        }
-        String sub = args.get(3).toLowerCase(Locale.ROOT);
-        try {
-            switch (sub) {
-                case "set" -> {
-                    if (args.size() < 6) {
-                        platform.sendMessage(sender, "Usage: /" + label + " user " + target + " meta set <key> <value>");
-                        return;
-                    }
-                    String key = args.get(4);
-                    String val = joinArgs(args, 5);
-                    withOnlineAutoEnsure(target, actor, id -> api.setMeta(id, key, val, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(sender, target, "Set meta '" + key + "'", res, err));
-                }
-                case "unset" -> {
-                    String key = args.get(4);
-                    withOnlineAutoEnsure(target, actor, id -> api.unsetMeta(id, key, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(sender, target, "Unset meta '" + key + "'", res, err));
-                }
-                case "setprefix", "addprefix", "setsuffix", "addsuffix" -> {
-                    if (args.size() < 6) {
-                        platform.sendMessage(sender, "Usage: /" + label + " user " + target + " meta " + sub + " <priority> <value> [duration] [contexts...]");
-                        return;
-                    }
-                    boolean isPrefix = sub.contains("prefix");
-                    int priority = Integer.parseInt(args.get(4));
-                    String value = args.get(5);
-                    DurationAndContexts dc = parseOptionalDurationAndContexts(args, 6, false);
-                    withOnlineAutoEnsure(target, actor, id -> isPrefix
-                            ? api.setPrefix(id, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null)
-                            : api.setSuffix(id, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(
-                                    sender, target,
-                                    "Set " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")",
-                                    res, err));
-                }
-                case "removeprefix", "removesuffix" -> {
-                    boolean isPrefix = sub.contains("prefix");
-                    int priority = Integer.parseInt(args.get(4));
-                    withOnlineAutoEnsure(target, actor, id -> isPrefix
-                            ? api.removePrefix(id, priority, actor, null)
-                            : api.removeSuffix(id, priority, actor, null))
-                            .whenComplete((res, err) -> reportUserMutation(
-                                    sender, target,
-                                    "Removed " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")",
-                                    res, err));
-                }
-                default -> platform.sendMessage(sender,
-                        "Unknown meta action '" + sub + "'. Expected set|unset|setprefix|removeprefix|setsuffix|removesuffix");
-            }
-        } catch (NumberFormatException error) {
-            platform.sendMessage(sender, "Priority must be an integer");
-        } catch (IllegalArgumentException error) {
-            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
+                    "Usage: /" + label + " user <player> <info|parent|group|permission|meta|promote|demote|clear|primarygroup>");
         }
     }
 
@@ -483,6 +615,19 @@ public final class BridgeCommandHandler {
             return;
         }
 
+        switch (action) {
+            case "permission", "perm", "permissions" -> {
+                handlePermissionAction(sender, label, false, group, args);
+                return;
+            }
+            case "parent", "parents" -> {
+                handleParentAction(sender, label, false, group, args);
+                return;
+            }
+            default -> {
+            }
+        }
+
         if (!requireWrite(sender)) return;
         String actor = platform.actorName(sender);
 
@@ -514,9 +659,7 @@ public final class BridgeCommandHandler {
                     api.patchGroup(group, null, displayName, actor, null)
                             .whenComplete((res, err) -> reportMutation(sender, "Updated displayName for '" + group + "'", res, err));
                 }
-                case "permission", "perm", "permissions" -> handleGroupPermission(sender, label, group, actor, args);
-                case "parent", "parents" -> handleGroupParent(sender, label, group, actor, args);
-                case "meta" -> handleGroupMeta(sender, label, group, actor, args);
+                case "meta" -> handleMetaAction(sender, label, false, group, actor, args);
                 case "editor", "ed" -> handleEditor(sender, label, "group", group, "");
                 case "prefix", "suffix" -> handleGroupAffix(sender, label, group, action.equals("prefix"), actor, args);
                 default -> platform.sendMessage(sender,
@@ -529,145 +672,390 @@ public final class BridgeCommandHandler {
         }
     }
 
-    private void handleGroupPermission(
-            Object sender, String label, String group, String actor, List<String> args) {
-        if (args.size() < 5) {
-            platform.sendMessage(sender, "Usage: /" + label + " group " + group + " permission <set|settemp|unset> <node> ...");
+    // -------------------------------------------------------------------------
+    // Shared permission / parent / meta / affix handlers for users & groups
+    // -------------------------------------------------------------------------
+
+    private void handlePermissionAction(
+            Object sender, String label, boolean isUser, String target, List<String> args) {
+        String kind = isUser ? "user " : "group ";
+        if (args.size() < 4) {
+            platform.sendMessage(sender,
+                    "Usage: /" + label + " " + kind + target + " permission <info [page]|set|settemp|unset|unsettemp> ...");
             return;
         }
         String sub = args.get(3).toLowerCase(Locale.ROOT);
+        if (sub.equals("info")) {
+            if (!requireAdmin(sender)) return;
+            int page = args.size() >= 5 ? parsePositiveInt(args.get(4), 1) : 1;
+            if (isUser) {
+                api.fetchUserRecord(target).whenComplete((user, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "User lookup failed: " + formatError(err));
+                    } else {
+                        sendPermissionInfo(sender, "User '" + user.username() + "'", user.nodes(), page);
+                    }
+                });
+            } else {
+                api.fetchGroup(target).whenComplete((group, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Group lookup failed: " + formatError(err));
+                    } else {
+                        sendPermissionInfo(sender, "Group '" + group.name() + "'", group.nodes(), page);
+                    }
+                });
+            }
+            return;
+        }
+
+        if (!requireWrite(sender)) return;
+        if (args.size() < 5) {
+            platform.sendMessage(sender,
+                    "Usage: /" + label + " " + kind + target + " permission <set|settemp|unset|unsettemp> <node> [true|false] [duration] [accumulate|replace|deny] [contexts...]");
+            return;
+        }
+        String actor = platform.actorName(sender);
         String key = args.get(4);
-        switch (sub) {
-            case "set", "settemp" -> {
-                PermArgs parsed = parsePermArgs(args, 5, sub.equals("settemp"));
-                api.setGroupPermission(group, key, parsed.value, parsed.durationSeconds, 0L, parsed.contexts, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender,
-                                "Set group '" + group + "' permission '" + key + "' = " + parsed.value, res, err));
+        try {
+            switch (sub) {
+                case "set", "settemp" -> {
+                    boolean requireDuration = sub.equals("settemp");
+                    PermArgs parsed = parsePermArgs(args, 5, requireDuration);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.setPermission(
+                                id, key, parsed.value, parsed.durationSeconds, 0L, parsed.contexts, parsed.modifier, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target,
+                                        "Set permission '" + key + "' = " + parsed.value + " ("
+                                                + DurationParser.formatDuration(parsed.durationSeconds) + ")",
+                                        res, err));
+                    } else {
+                        api.setGroupPermission(
+                                target, key, parsed.value, parsed.durationSeconds, 0L, parsed.contexts, parsed.modifier, actor, null)
+                                .whenComplete((res, err) -> reportMutation(sender,
+                                        "Set group '" + target + "' permission '" + key + "' = " + parsed.value, res, err));
+                    }
+                }
+                case "unset", "unsettemp" -> {
+                    boolean tempOnly = sub.equals("unsettemp");
+                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.unsetPermission(id, key, contexts, tempOnly, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target,
+                                        (tempOnly ? "Unset temporary" : "Unset") + " permission '" + key + "'", res, err));
+                    } else {
+                        api.unsetGroupPermission(target, key, contexts, tempOnly, actor, null)
+                                .whenComplete((res, err) -> reportMutation(sender,
+                                        (tempOnly ? "Unset temporary group '" : "Unset group '") + target + "' permission '" + key + "'",
+                                        res, err));
+                    }
+                }
+                default -> platform.sendMessage(sender,
+                        "Unknown permission action '" + sub + "'. Expected info|set|settemp|unset|unsettemp");
             }
-            case "unset" -> {
-                Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
-                api.unsetGroupPermission(group, key, contexts, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender,
-                                "Unset group '" + group + "' permission '" + key + "'", res, err));
-            }
-            default -> platform.sendMessage(sender, "Unknown permission action '" + sub + "'");
+        } catch (IllegalArgumentException error) {
+            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
         }
     }
 
-    private void handleGroupParent(
-            Object sender, String label, String group, String actor, List<String> args) {
-        if (args.size() < 5) {
-            platform.sendMessage(sender, "Usage: /" + label + " group " + group + " parent <add|addtemp|accumulate|set|remove> <parent> ...");
+    private void handleParentAction(
+            Object sender, String label, boolean isUser, String target, List<String> args) {
+        String kind = isUser ? "user " : "group ";
+        if (args.size() < 4) {
+            platform.sendMessage(sender,
+                    "Usage: /" + label + " " + kind + target + " parent <info|add|addtemp|accumulate|replace|deny|set|remove|removetemp|settrack|cleartrack"
+                            + (isUser ? "|switchprimarygroup" : "") + "> ...");
             return;
         }
         String sub = args.get(3).toLowerCase(Locale.ROOT);
-        String parent = args.get(4);
-        switch (sub) {
-            case "remove" -> {
-                Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
-                api.removeGroupParent(group, parent, contexts, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender,
-                                "Removed parent '" + parent + "' from group '" + group + "'", res, err));
+        if (sub.equals("info")) {
+            if (!requireAdmin(sender)) return;
+            if (isUser) {
+                api.fetchUserRecord(target).whenComplete((user, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "User lookup failed: " + formatError(err));
+                    } else {
+                        sendParentInfo(sender, "User '" + user.username() + "' (primaryGroup=" + user.primaryGroup() + ")", user.parents());
+                    }
+                });
+            } else {
+                api.fetchGroup(target).whenComplete((group, err) -> {
+                    if (err != null) {
+                        platform.sendMessage(sender, "Group lookup failed: " + formatError(err));
+                    } else {
+                        sendParentInfo(sender, "Group '" + group.name() + "'", group.parents());
+                    }
+                });
             }
-            case "add", "addtemp", "accumulate", "set" -> {
-                ParentMode mode = switch (sub) {
-                    case "set" -> ParentMode.SET;
-                    case "accumulate" -> ParentMode.ACCUMULATE;
-                    default -> ParentMode.ADD;
-                };
-                DurationAndContexts dc = parseOptionalDurationAndContexts(args, 5, sub.equals("addtemp") || sub.equals("accumulate"));
-                api.addGroupParent(group, parent, mode, dc.durationSeconds, 0L, dc.contexts, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender,
-                                "Added parent '" + parent + "' to group '" + group + "'", res, err));
+            return;
+        }
+
+        if (!requireWrite(sender)) return;
+        if (args.size() < 5) {
+            platform.sendMessage(sender,
+                    "Usage: /" + label + " " + kind + target + " parent " + sub + " <group|track> ...");
+            return;
+        }
+        String actor = platform.actorName(sender);
+        String firstArg = args.get(4);
+        try {
+            switch (sub) {
+                case "switchprimarygroup", "setprimary" -> {
+                    if (!isUser) {
+                        platform.sendMessage(sender, "Unknown group parent action '" + sub + "'");
+                        return;
+                    }
+                    withOnlineAutoEnsure(target, actor, id -> api.setPrimaryGroup(id, firstArg, actor, null))
+                            .whenComplete((res, err) -> reportUserMutation(sender, target, "Primary group set to '" + firstArg + "'", res, err));
+                }
+                case "settrack" -> {
+                    if (args.size() < 6) {
+                        platform.sendMessage(sender, "Usage: /" + label + " " + kind + target + " parent settrack <track> <group> [contexts...]");
+                        return;
+                    }
+                    String track = firstArg;
+                    String group = args.get(5);
+                    Map<String, String> contexts = ContextParser.parseTrailing(args, 6);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.setUserTrack(id, track, group, contexts, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target, "Set track '" + track + "' group to '" + group + "'", res, err));
+                    } else {
+                        api.setGroupTrack(target, track, group, contexts, actor, null)
+                                .whenComplete((res, err) -> reportMutation(
+                                        sender, "Set group '" + target + "' track '" + track + "' to '" + group + "'", res, err));
+                    }
+                }
+                case "cleartrack" -> {
+                    String track = firstArg;
+                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.clearUserTrack(id, track, contexts, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target, "Cleared track '" + track + "'", res, err));
+                    } else {
+                        api.clearGroupTrack(target, track, contexts, actor, null)
+                                .whenComplete((res, err) -> reportMutation(
+                                        sender, "Cleared track '" + track + "' from group '" + target + "'", res, err));
+                    }
+                }
+                case "remove", "removetemp" -> {
+                    boolean tempOnly = sub.equals("removetemp");
+                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.removeParent(id, firstArg, contexts, tempOnly, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target,
+                                        (tempOnly ? "Removed temporary" : "Removed") + " group '" + firstArg + "'", res, err));
+                    } else {
+                        api.removeGroupParent(target, firstArg, contexts, tempOnly, actor, null)
+                                .whenComplete((res, err) -> reportMutation(
+                                        sender,
+                                        (tempOnly ? "Removed temporary parent '" : "Removed parent '") + firstArg + "' from group '" + target + "'",
+                                        res, err));
+                    }
+                }
+                case "add", "addtemp", "accumulate", "replace", "deny", "set" -> {
+                    boolean requireDuration = sub.equals("addtemp") || sub.equals("accumulate")
+                            || sub.equals("replace") || sub.equals("deny");
+                    DurationModifierContexts dc = parseDurationModifierContexts(args, 5, requireDuration);
+                    ParentMode mode = resolveParentMode(sub, dc.modifier);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.addParent(
+                                id, firstArg, mode, dc.durationSeconds, 0L, dc.contexts, false, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target,
+                                        "Updated group '" + firstArg + "' (" + mode.wireName() + ", "
+                                                + DurationParser.formatDuration(dc.durationSeconds) + ")",
+                                        res, err));
+                    } else {
+                        api.addGroupParent(target, firstArg, mode, dc.durationSeconds, 0L, dc.contexts, actor, null)
+                                .whenComplete((res, err) -> reportMutation(sender,
+                                        "Added parent '" + firstArg + "' to group '" + target + "'", res, err));
+                    }
+                }
+                default -> platform.sendMessage(sender,
+                        "Unknown parent action '" + sub + "'. Expected info|add|addtemp|accumulate|replace|deny|set|remove|removetemp|settrack|cleartrack");
             }
-            default -> platform.sendMessage(sender, "Unknown parent action '" + sub + "'");
+        } catch (IllegalArgumentException error) {
+            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
         }
     }
 
-    private void handleGroupMeta(
-            Object sender, String label, String group, String actor, List<String> args) {
+    private void handleMetaAction(
+            Object sender, String label, boolean isUser, String target, String actor, List<String> args) {
+        String kind = isUser ? "user " : "group ";
         if (args.size() < 5) {
-            platform.sendMessage(sender, "Usage: /" + label + " group " + group + " meta <set|unset|setprefix|removeprefix|setsuffix|removesuffix> ...");
+            platform.sendMessage(sender,
+                    "Usage: /" + label + " " + kind + target + " meta <set|settemp|unset|unsettemp|setprefix|addprefix|settempprefix|addtempprefix|removeprefix|removetempprefix|setsuffix|addsuffix|settempsuffix|addtempsuffix|removesuffix|removetempsuffix> ...");
             return;
         }
         String sub = args.get(3).toLowerCase(Locale.ROOT);
-        switch (sub) {
-            case "set" -> {
-                if (args.size() < 6) {
-                    platform.sendMessage(sender, "Usage: /" + label + " group " + group + " meta set <key> <value>");
-                    return;
+        try {
+            switch (sub) {
+                case "set" -> {
+                    if (args.size() < 6) {
+                        platform.sendMessage(sender, "Usage: /" + label + " " + kind + target + " meta set <key> <value> [contexts...]");
+                        return;
+                    }
+                    MetaSetArgs parsed = parseMetaSetArgs(args, 4);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.setMeta(
+                                id, parsed.key, parsed.value, 0L, 0L, parsed.contexts, null, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(sender, target, "Set meta '" + parsed.key + "'", res, err));
+                    } else {
+                        api.setGroupMeta(target, parsed.key, parsed.value, 0L, 0L, parsed.contexts, null, actor, null)
+                                .whenComplete((res, err) -> reportMutation(sender, "Set group '" + target + "' meta '" + parsed.key + "'", res, err));
+                    }
                 }
-                String key = args.get(4);
-                String val = joinArgs(args, 5);
-                api.setGroupMeta(group, key, val, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender, "Set group '" + group + "' meta '" + key + "'", res, err));
-            }
-            case "unset" -> {
-                String key = args.get(4);
-                api.unsetGroupMeta(group, key, actor, null)
-                        .whenComplete((res, err) -> reportMutation(sender, "Unset group '" + group + "' meta '" + key + "'", res, err));
-            }
-            case "setprefix", "addprefix", "setsuffix", "addsuffix" -> {
-                if (args.size() < 6) {
-                    platform.sendMessage(sender, "Usage: /" + label + " group " + group + " meta " + sub + " <priority> <value> [duration] [contexts...]");
-                    return;
+                case "settemp" -> {
+                    if (args.size() < 7) {
+                        platform.sendMessage(sender, "Usage: /" + label + " " + kind + target + " meta settemp <key> <value> <duration> [accumulate|replace|deny] [contexts...]");
+                        return;
+                    }
+                    String key = args.get(4);
+                    String val = args.get(5);
+                    DurationModifierContexts dc = parseDurationModifierContexts(args, 6, true);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.setMeta(
+                                id, key, val, dc.durationSeconds, 0L, dc.contexts, dc.modifier, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(sender, target, "Set temporary meta '" + key + "'", res, err));
+                    } else {
+                        api.setGroupMeta(target, key, val, dc.durationSeconds, 0L, dc.contexts, dc.modifier, actor, null)
+                                .whenComplete((res, err) -> reportMutation(sender, "Set temporary group '" + target + "' meta '" + key + "'", res, err));
+                    }
                 }
-                boolean isPrefix = sub.contains("prefix");
-                int priority = Integer.parseInt(args.get(4));
-                String value = args.get(5);
-                DurationAndContexts dc = parseOptionalDurationAndContexts(args, 6, false);
-                CompletableFuture<MutationResult> fut = isPrefix
-                        ? api.setGroupPrefix(group, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null)
-                        : api.setGroupSuffix(group, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null);
-                fut.whenComplete((res, err) -> reportMutation(sender,
-                        "Set group '" + group + "' " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")", res, err));
+                case "unset", "unsettemp" -> {
+                    boolean tempOnly = sub.equals("unsettemp");
+                    String key = args.get(4);
+                    Map<String, String> contexts = ContextParser.parseTrailing(args, 5);
+                    if (isUser) {
+                        withOnlineAutoEnsure(target, actor, id -> api.unsetMeta(id, key, contexts, tempOnly, actor, null))
+                                .whenComplete((res, err) -> reportUserMutation(
+                                        sender, target, (tempOnly ? "Unset temporary" : "Unset") + " meta '" + key + "'", res, err));
+                    } else {
+                        api.unsetGroupMeta(target, key, contexts, tempOnly, actor, null)
+                                .whenComplete((res, err) -> reportMutation(
+                                        sender, (tempOnly ? "Unset temporary group '" : "Unset group '") + target + "' meta '" + key + "'", res, err));
+                    }
+                }
+                case "setprefix", "addprefix", "settempprefix", "addtempprefix",
+                        "setsuffix", "addsuffix", "settempsuffix", "addtempsuffix" -> {
+                    if (args.size() < 6) {
+                        platform.sendMessage(sender, "Usage: /" + label + " " + kind + target + " meta " + sub
+                                + " <priority> <value> [duration] [accumulate|replace|deny] [contexts...]");
+                        return;
+                    }
+                    boolean isPrefix = sub.contains("prefix");
+                    String mode = sub.startsWith("add") ? "add" : "set";
+                    boolean requireDuration = sub.contains("temp");
+                    applyAffixSet(sender, isUser, target, actor, isPrefix, mode, requireDuration, args, 4);
+                }
+                case "removeprefix", "removetempprefix", "removesuffix", "removetempsuffix" -> {
+                    boolean isPrefix = sub.contains("prefix");
+                    boolean tempOnly = sub.contains("temp");
+                    applyAffixRemove(sender, isUser, target, actor, isPrefix, tempOnly, args, 4);
+                }
+                default -> platform.sendMessage(sender,
+                        "Unknown meta action '" + sub + "'. Expected set|settemp|unset|unsettemp|setprefix|addprefix|settempprefix|addtempprefix|removeprefix|removetempprefix|setsuffix|addsuffix|settempsuffix|addtempsuffix|removesuffix|removetempsuffix");
             }
-            case "removeprefix", "removesuffix" -> {
-                boolean isPrefix = sub.contains("prefix");
-                int priority = Integer.parseInt(args.get(4));
-                CompletableFuture<MutationResult> fut = isPrefix
-                        ? api.removeGroupPrefix(group, priority, actor, null)
-                        : api.removeGroupSuffix(group, priority, actor, null);
-                fut.whenComplete((res, err) -> reportMutation(sender,
-                        "Removed group '" + group + "' " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")", res, err));
-            }
-            default -> platform.sendMessage(sender, "Unknown group meta action '" + sub + "'");
+        } catch (NumberFormatException error) {
+            platform.sendMessage(sender, "Priority must be an integer");
+        } catch (IllegalArgumentException error) {
+            platform.sendMessage(sender, "Invalid argument: " + error.getMessage());
         }
     }
 
     private void handleGroupAffix(
             Object sender, String label, String group, boolean isPrefix, String actor, List<String> args) {
+        String noun = isPrefix ? "prefix" : "suffix";
         if (args.size() < 5) {
             platform.sendMessage(sender, "Usage: /" + label + " group " + group + " "
-                    + (isPrefix ? "prefix" : "suffix") + " <set <priority> <value> [duration] [contexts...]|remove <priority>>");
+                    + noun + " <set|add|settemp|addtemp|remove|removetemp> <priority> ...");
             return;
         }
         String sub = args.get(3).toLowerCase(Locale.ROOT);
         switch (sub) {
-            case "set", "add" -> {
+            case "set", "add", "settemp", "addtemp" -> {
                 if (args.size() < 6) {
                     platform.sendMessage(sender, "Usage: /" + label + " group " + group + " "
-                            + (isPrefix ? "prefix" : "suffix") + " set <priority> <value> [duration] [contexts...]");
+                            + noun + " " + sub + " <priority> <value> [duration] [accumulate|replace|deny] [contexts...]");
                     return;
                 }
-                int priority = Integer.parseInt(args.get(4));
-                String value = args.get(5);
-                DurationAndContexts dc = parseOptionalDurationAndContexts(args, 6, false);
-                CompletableFuture<MutationResult> fut = isPrefix
-                        ? api.setGroupPrefix(group, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null)
-                        : api.setGroupSuffix(group, priority, value, dc.durationSeconds, 0L, dc.contexts, actor, null);
-                fut.whenComplete((res, err) -> reportMutation(sender,
-                        "Set group '" + group + "' " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")", res, err));
+                String mode = sub.startsWith("add") ? "add" : "set";
+                boolean requireDuration = sub.contains("temp");
+                applyAffixSet(sender, false, group, actor, isPrefix, mode, requireDuration, args, 4);
             }
-            case "remove" -> {
-                int priority = Integer.parseInt(args.get(4));
-                CompletableFuture<MutationResult> fut = isPrefix
-                        ? api.removeGroupPrefix(group, priority, actor, null)
-                        : api.removeGroupSuffix(group, priority, actor, null);
-                fut.whenComplete((res, err) -> reportMutation(sender,
-                        "Removed group '" + group + "' " + (isPrefix ? "prefix" : "suffix") + " (priority " + priority + ")", res, err));
-            }
+            case "remove", "removetemp" -> applyAffixRemove(sender, false, group, actor, isPrefix, sub.equals("removetemp"), args, 4);
             default -> platform.sendMessage(sender, "Unknown affix action '" + sub + "'");
+        }
+    }
+
+    private void applyAffixSet(
+            Object sender,
+            boolean isUser,
+            String target,
+            String actor,
+            boolean isPrefix,
+            String mode,
+            boolean requireDuration,
+            List<String> args,
+            int priorityIdx) {
+        int priority = Integer.parseInt(args.get(priorityIdx));
+        String value = args.get(priorityIdx + 1);
+        DurationModifierContexts dc = parseDurationModifierContexts(args, priorityIdx + 2, requireDuration);
+        String noun = isPrefix ? "prefix" : "suffix";
+        if (isUser) {
+            withOnlineAutoEnsure(target, actor, id -> isPrefix
+                    ? api.setPrefix(id, priority, value, dc.durationSeconds, 0L, dc.contexts, mode, dc.modifier, actor, null)
+                    : api.setSuffix(id, priority, value, dc.durationSeconds, 0L, dc.contexts, mode, dc.modifier, actor, null))
+                    .whenComplete((res, err) -> reportUserMutation(
+                            sender, target, "Set " + noun + " (priority " + priority + ")", res, err));
+        } else {
+            CompletableFuture<MutationResult> fut = isPrefix
+                    ? api.setGroupPrefix(target, priority, value, dc.durationSeconds, 0L, dc.contexts, mode, dc.modifier, actor, null)
+                    : api.setGroupSuffix(target, priority, value, dc.durationSeconds, 0L, dc.contexts, mode, dc.modifier, actor, null);
+            fut.whenComplete((res, err) -> reportMutation(
+                    sender, "Set group '" + target + "' " + noun + " (priority " + priority + ")", res, err));
+        }
+    }
+
+    private void applyAffixRemove(
+            Object sender,
+            boolean isUser,
+            String target,
+            String actor,
+            boolean isPrefix,
+            boolean tempOnly,
+            List<String> args,
+            int priorityIdx) {
+        int priority = Integer.parseInt(args.get(priorityIdx));
+        String value = null;
+        int ctxIdx = priorityIdx + 1;
+        if (ctxIdx < args.size() && !ContextParser.isContextToken(args.get(ctxIdx))) {
+            value = args.get(ctxIdx);
+            ctxIdx++;
+        }
+        Map<String, String> contexts = ContextParser.parseTrailing(args, ctxIdx);
+        String finalValue = value;
+        String noun = isPrefix ? "prefix" : "suffix";
+        if (isUser) {
+            withOnlineAutoEnsure(target, actor, id -> isPrefix
+                    ? api.removePrefix(id, priority, finalValue, contexts, tempOnly, actor, null)
+                    : api.removeSuffix(id, priority, finalValue, contexts, tempOnly, actor, null))
+                    .whenComplete((res, err) -> reportUserMutation(
+                            sender, target,
+                            (tempOnly ? "Removed temporary " : "Removed ") + noun + " (priority " + priority + ")",
+                            res, err));
+        } else {
+            CompletableFuture<MutationResult> fut = isPrefix
+                    ? api.removeGroupPrefix(target, priority, finalValue, contexts, tempOnly, actor, null)
+                    : api.removeGroupSuffix(target, priority, finalValue, contexts, tempOnly, actor, null);
+            fut.whenComplete((res, err) -> reportMutation(
+                    sender,
+                    (tempOnly ? "Removed temporary group '" : "Removed group '") + target + "' " + noun + " (priority " + priority + ")",
+                    res, err));
         }
     }
 
@@ -677,7 +1065,7 @@ public final class BridgeCommandHandler {
 
     private void handleTrack(Object sender, String label, List<String> args) {
         if (args.size() < 2) {
-            platform.sendMessage(sender, "Usage: /" + label + " track <list|<name> <info|create|delete|set|append|remove>>");
+            platform.sendMessage(sender, "Usage: /" + label + " track <list|<name> <info|create|delete|set|append|remove|clone>>");
             return;
         }
         String first = args.get(1);
@@ -768,6 +1156,17 @@ public final class BridgeCommandHandler {
                     return api.putTrack(track, next, actor, null);
                 }).whenComplete((res, err) -> reportMutation(sender, "Removed '" + group + "' from track '" + track + "'", res, err));
             }
+            case "clone" -> {
+                if (args.size() < 4) {
+                    platform.sendMessage(sender, "Usage: /" + label + " track " + track + " clone <newName>");
+                    return;
+                }
+                String newName = args.get(3).toLowerCase(Locale.ROOT);
+                api.fetchTrack(track)
+                        .thenCompose(existing -> api.createTrack(newName, existing.groups(), actor, null))
+                        .whenComplete((res, err) -> reportMutation(
+                                sender, "Cloned track '" + track + "' to '" + newName + "'", res, err));
+            }
             default -> platform.sendMessage(sender, "Unknown track action '" + action + "'");
         }
     }
@@ -842,12 +1241,12 @@ public final class BridgeCommandHandler {
             String prefix = args.isEmpty() ? "" : args.getFirst();
             List<String> top = new ArrayList<>();
             if (canAdmin) {
-                top.addAll(List.of("status", "refresh", "check", "reload", "user", "group", "track"));
+                top.addAll(List.of("status", "refresh", "check", "search", "reload", "user", "group", "track"));
             } else {
                 top.addAll(List.of("user", "group", "track"));
             }
             if (canWrite) {
-                top.addAll(List.of("log", "editor", "applyedits", "tree", "verbose"));
+                top.addAll(List.of("sync", "networksync", "bulkupdate", "log", "editor", "applyedits", "tree", "verbose"));
             }
             return filter(top, prefix);
         }
@@ -862,40 +1261,32 @@ public final class BridgeCommandHandler {
         if (root.equals("reload") && idx == 1 && canWrite) {
             return filter(List.of("remote"), current);
         }
+        if (root.equals("bulkupdate") && canWrite) {
+            if (idx == 1) {
+                return filter(List.of("all", "users", "groups", "confirm"), current);
+            }
+            if (idx == 2 && !args.get(1).equalsIgnoreCase("confirm")) {
+                return filter(List.of("update", "delete"), current);
+            }
+            if (idx == 3 && args.get(2).equalsIgnoreCase("update")) {
+                return filter(List.of("permission", "group", "meta", "prefix", "suffix"), current);
+            }
+        }
         if (root.equals("user")) {
             if (idx == 1) {
                 return filter(platform.onlinePlayerNames(), current);
             }
             if (idx == 2) {
                 List<String> subs = new ArrayList<>();
-                if (canAdmin) subs.add("info");
-                if (canWrite) subs.addAll(List.of("group", "parent", "permission", "meta", "promote", "demote", "editor", "clear", "primarygroup"));
+                if (canAdmin) subs.addAll(List.of("info", "permission", "parent", "group"));
+                if (canWrite) subs.addAll(List.of("meta", "promote", "demote", "editor", "clear", "primarygroup"));
                 return filter(subs, current);
             }
-            if (canWrite && idx == 3) {
-                return switch (args.get(2).toLowerCase(Locale.ROOT)) {
-                    case "group", "groups", "parent", "parents" ->
-                            filter(List.of("add", "addtemp", "accumulate", "set", "remove", "switchprimarygroup"), current);
-                    case "permission", "perm", "permissions" ->
-                            filter(List.of("set", "settemp", "unset"), current);
-                    case "meta" ->
-                            filter(List.of("set", "unset", "setprefix", "removeprefix", "setsuffix", "removesuffix"), current);
-                    case "clear" ->
-                            filter(List.of("all", "permissions", "parents", "meta"), current);
-                    default -> List.of();
-                };
+            if (idx == 3) {
+                return tabCompleteEntitySub(true, args.get(2).toLowerCase(Locale.ROOT), canAdmin, canWrite, current);
             }
-            if (canWrite && idx == 5) {
-                String sub2 = args.get(2).toLowerCase(Locale.ROOT);
-                String sub3 = args.get(3).toLowerCase(Locale.ROOT);
-                if ((sub2.equals("group") || sub2.equals("groups") || sub2.equals("parent") || sub2.equals("parents"))
-                        && (sub3.equals("add") || sub3.equals("addtemp") || sub3.equals("accumulate") || sub3.equals("set"))) {
-                    return filter(List.of("30d", "7d", "24h", "1h", "permanent"), current);
-                }
-                if ((sub2.equals("permission") || sub2.equals("perm") || sub2.equals("permissions"))
-                        && (sub3.equals("set") || sub3.equals("settemp"))) {
-                    return filter(List.of("true", "false"), current);
-                }
+            if (canWrite && idx >= 5) {
+                return tabCompleteEntityArgs(args, idx, current);
             }
         }
         if (root.equals("group")) {
@@ -904,18 +1295,15 @@ public final class BridgeCommandHandler {
             }
             if (idx == 2 && !args.get(1).equalsIgnoreCase("list")) {
                 List<String> subs = new ArrayList<>();
-                if (canAdmin) subs.addAll(List.of("info", "members"));
-                if (canWrite) subs.addAll(List.of("create", "delete", "setweight", "setdisplayname", "permission", "parent", "meta", "prefix", "suffix", "editor"));
+                if (canAdmin) subs.addAll(List.of("info", "members", "permission", "parent"));
+                if (canWrite) subs.addAll(List.of("create", "delete", "setweight", "setdisplayname", "meta", "prefix", "suffix", "editor"));
                 return filter(subs, current);
             }
-            if (canWrite && idx == 3) {
-                return switch (args.get(2).toLowerCase(Locale.ROOT)) {
-                    case "permission", "perm", "permissions" -> filter(List.of("set", "settemp", "unset"), current);
-                    case "parent", "parents" -> filter(List.of("add", "addtemp", "accumulate", "set", "remove"), current);
-                    case "meta" -> filter(List.of("set", "unset", "setprefix", "removeprefix", "setsuffix", "removesuffix"), current);
-                    case "prefix", "suffix" -> filter(List.of("set", "remove"), current);
-                    default -> List.of();
-                };
+            if (idx == 3) {
+                return tabCompleteEntitySub(false, args.get(2).toLowerCase(Locale.ROOT), canAdmin, canWrite, current);
+            }
+            if (canWrite && idx >= 5) {
+                return tabCompleteEntityArgs(args, idx, current);
             }
         }
         if (root.equals("track")) {
@@ -925,7 +1313,7 @@ public final class BridgeCommandHandler {
             if (idx == 2 && !args.get(1).equalsIgnoreCase("list")) {
                 List<String> subs = new ArrayList<>();
                 if (canAdmin) subs.add("info");
-                if (canWrite) subs.addAll(List.of("create", "delete", "set", "append", "remove"));
+                if (canWrite) subs.addAll(List.of("create", "delete", "set", "append", "remove", "clone"));
                 return filter(subs, current);
             }
         }
@@ -939,6 +1327,85 @@ public final class BridgeCommandHandler {
         }
         if (root.equals("verbose") && canWrite && idx == 1) {
             return filter(List.of("paste", "upload"), current);
+        }
+        return List.of();
+    }
+
+    private static List<String> tabCompleteEntitySub(
+            boolean isUser, String sub2, boolean canAdmin, boolean canWrite, String current) {
+        List<String> out = new ArrayList<>();
+        switch (sub2) {
+            case "group", "groups", "parent", "parents" -> {
+                if (canAdmin) out.add("info");
+                if (canWrite) {
+                    out.addAll(List.of("add", "addtemp", "accumulate", "replace", "deny",
+                            "set", "remove", "removetemp", "settrack", "cleartrack"));
+                    if (isUser) out.add("switchprimarygroup");
+                }
+            }
+            case "permission", "perm", "permissions" -> {
+                if (canAdmin) out.add("info");
+                if (canWrite) out.addAll(List.of("set", "settemp", "unset", "unsettemp"));
+            }
+            case "meta" -> {
+                if (canWrite) {
+                    out.addAll(List.of("set", "settemp", "unset", "unsettemp",
+                            "setprefix", "addprefix", "settempprefix", "addtempprefix", "removeprefix", "removetempprefix",
+                            "setsuffix", "addsuffix", "settempsuffix", "addtempsuffix", "removesuffix", "removetempsuffix"));
+                }
+            }
+            case "prefix", "suffix" -> {
+                if (!isUser && canWrite) {
+                    out.addAll(List.of("set", "add", "settemp", "addtemp", "remove", "removetemp"));
+                }
+            }
+            case "clear" -> {
+                if (isUser && canWrite) {
+                    out.addAll(List.of("all", "permissions", "parents", "meta"));
+                }
+            }
+            default -> {
+            }
+        }
+        return filter(out, current);
+    }
+
+    private static List<String> tabCompleteEntityArgs(List<String> args, int idx, String current) {
+        String sub2 = args.get(2).toLowerCase(Locale.ROOT);
+        String sub3 = args.get(3).toLowerCase(Locale.ROOT);
+        if (idx == 5) {
+            if ((sub2.equals("group") || sub2.equals("groups") || sub2.equals("parent") || sub2.equals("parents"))
+                    && (sub3.equals("add") || sub3.equals("addtemp") || sub3.equals("accumulate")
+                    || sub3.equals("replace") || sub3.equals("deny") || sub3.equals("set"))) {
+                return filter(List.of("30d", "7d", "24h", "1h", "permanent"), current);
+            }
+            if ((sub2.equals("permission") || sub2.equals("perm") || sub2.equals("permissions"))
+                    && (sub3.equals("set") || sub3.equals("settemp"))) {
+                return filter(List.of("true", "false"), current);
+            }
+        } else if (idx == 6) {
+            if ((sub2.equals("group") || sub2.equals("groups") || sub2.equals("parent") || sub2.equals("parents"))
+                    && (sub3.equals("add") || sub3.equals("addtemp"))) {
+                return filter(List.of("accumulate", "replace", "deny"), current);
+            }
+            if ((sub2.equals("permission") || sub2.equals("perm") || sub2.equals("permissions")) && sub3.equals("settemp")) {
+                String tok5 = args.get(5).toLowerCase(Locale.ROOT);
+                return (tok5.equals("true") || tok5.equals("false"))
+                        ? filter(List.of("30d", "7d", "24h", "1h"), current)
+                        : filter(List.of("accumulate", "replace", "deny"), current);
+            }
+            if ((sub2.equals("meta") && (sub3.equals("settemp") || sub3.contains("tempprefix") || sub3.contains("tempsuffix")))
+                    || ((sub2.equals("prefix") || sub2.equals("suffix")) && sub3.contains("temp"))) {
+                return filter(List.of("30d", "7d", "24h", "1h"), current);
+            }
+        } else if (idx == 7) {
+            if ((sub2.equals("permission") || sub2.equals("perm") || sub2.equals("permissions")) && sub3.equals("settemp")) {
+                return filter(List.of("accumulate", "replace", "deny"), current);
+            }
+            if ((sub2.equals("meta") && (sub3.equals("settemp") || sub3.contains("prefix") || sub3.contains("suffix")))
+                    || ((sub2.equals("prefix") || sub2.equals("suffix")) && !sub3.startsWith("remove"))) {
+                return filter(List.of("accumulate", "replace", "deny"), current);
+            }
         }
         return List.of();
     }
@@ -982,6 +1449,40 @@ public final class BridgeCommandHandler {
             platform.sendMessage(sender, "Operation failed: " + formatError(error));
         } else {
             platform.sendMessage(sender, summary + " (rev " + result.revision() + ")");
+        }
+    }
+
+    private void sendPermissionInfo(Object sender, String subject, List<Node> nodes, int requestedPage) {
+        int total = nodes.size();
+        int totalPages = Math.max(1, (total + INFO_PER_PAGE - 1) / INFO_PER_PAGE);
+        int page = Math.min(requestedPage, totalPages);
+        platform.sendMessage(sender, subject + " permissions (Page " + page + "/" + totalPages + " - " + total + " total):");
+        if (total == 0) {
+            platform.sendMessage(sender, "  (none)");
+            return;
+        }
+        int start = (page - 1) * INFO_PER_PAGE;
+        int end = Math.min(total, start + INFO_PER_PAGE);
+        long nowEpoch = Instant.now().getEpochSecond();
+        for (int i = start; i < end; i++) {
+            Node n = nodes.get(i);
+            String exp = formatExpirySuffix(n.expiry(), nowEpoch);
+            String ctx = n.contexts().isEmpty() ? "" : " " + n.contexts();
+            platform.sendMessage(sender, "  " + n.key() + " = " + n.value() + exp + ctx);
+        }
+    }
+
+    private void sendParentInfo(Object sender, String subject, List<ParentEntry> parents) {
+        platform.sendMessage(sender, subject + " parents (" + parents.size() + "):");
+        if (parents.isEmpty()) {
+            platform.sendMessage(sender, "  (none)");
+            return;
+        }
+        long nowEpoch = Instant.now().getEpochSecond();
+        for (ParentEntry p : parents) {
+            String exp = p.permanent() ? " (permanent)" : formatExpirySuffix(p.expiry(), nowEpoch);
+            String ctx = p.contexts().isEmpty() ? "" : " " + p.contexts();
+            platform.sendMessage(sender, "  " + p.group() + exp + ctx);
         }
     }
 
@@ -1056,6 +1557,14 @@ public final class BridgeCommandHandler {
             joiner.add("[" + pm.priority() + "]='" + pm.value() + "'");
         }
         return joiner.toString();
+    }
+
+    private static String formatExpirySuffix(long expiry, long nowEpoch) {
+        if (expiry <= 0) {
+            return "";
+        }
+        long rem = expiry - nowEpoch;
+        return rem > 0 ? " (expires in " + DurationParser.formatDuration(rem) + ")" : " (expired)";
     }
 
     private boolean requireAdmin(Object sender) {
@@ -1151,22 +1660,60 @@ public final class BridgeCommandHandler {
     }
 
     private void sendUsage(Object sender, String label) {
-        platform.sendMessage(sender, "Usage: /" + label + " <status|refresh|check|reload|user|group|track|log|editor|applyedits|tree|verbose>");
+        platform.sendMessage(sender,
+                "Usage: /" + label + " <status|refresh|check|search|reload|sync|networksync|bulkupdate|user|group|track|log|editor|applyedits|tree|verbose>");
     }
 
-    private static DurationAndContexts parseOptionalDurationAndContexts(
+    private static boolean isModifierToken(String tok) {
+        return tok != null && MODIFIERS.contains(tok.toLowerCase(Locale.ROOT));
+    }
+
+    private static ParentMode resolveParentMode(String sub, String modifier) {
+        ParentMode base = switch (sub) {
+            case "set" -> ParentMode.SET;
+            case "accumulate" -> ParentMode.ACCUMULATE;
+            case "replace" -> ParentMode.REPLACE;
+            case "deny" -> ParentMode.DENY;
+            default -> ParentMode.ADD;
+        };
+        if (modifier == null) {
+            return base;
+        }
+        ParentMode fromMod = switch (modifier) {
+            case "accumulate" -> ParentMode.ACCUMULATE;
+            case "replace" -> ParentMode.REPLACE;
+            case "deny" -> ParentMode.DENY;
+            default -> base;
+        };
+        if (base == ParentMode.ADD || base == fromMod) {
+            return fromMod;
+        }
+        throw new IllegalArgumentException("Conflicting modifier '" + modifier + "' for parent '" + sub + "'");
+    }
+
+    private static DurationModifierContexts parseDurationModifierContexts(
             List<String> args, int startIdx, boolean requirePositiveDuration) {
         long durationSeconds = 0L;
+        String modifier = null;
         int idx = startIdx;
-        if (idx < args.size() && !ContextParser.isContextToken(args.get(idx))) {
+        if (idx < args.size() && !ContextParser.isContextToken(args.get(idx)) && !isModifierToken(args.get(idx))) {
             durationSeconds = DurationParser.parseDurationSeconds(args.get(idx));
             idx++;
         }
         if (requirePositiveDuration && durationSeconds <= 0L) {
             throw new IllegalArgumentException("A positive duration is required (e.g. 30d, 1h)");
         }
-        Map<String, String> contexts = ContextParser.parseTrailing(args, idx);
-        return new DurationAndContexts(durationSeconds, contexts);
+        if (idx < args.size() && isModifierToken(args.get(idx))) {
+            modifier = args.get(idx).toLowerCase(Locale.ROOT);
+            idx++;
+        }
+        int end = args.size();
+        if (modifier == null && end > idx && isModifierToken(args.get(end - 1))) {
+            modifier = args.get(end - 1).toLowerCase(Locale.ROOT);
+            end--;
+        }
+        Map<String, String> contexts = ContextParser.parseTrailing(args.subList(0, end), idx);
+        return new DurationModifierContexts(durationSeconds, modifier, contexts);
     }
 
     private static PermArgs parsePermArgs(List<String> args, int startIdx, boolean requirePositiveDuration) {
@@ -1179,8 +1726,20 @@ public final class BridgeCommandHandler {
                 idx++;
             }
         }
-        DurationAndContexts dc = parseOptionalDurationAndContexts(args, idx, requirePositiveDuration);
-        return new PermArgs(value, dc.durationSeconds, dc.contexts);
+        DurationModifierContexts dc = parseDurationModifierContexts(args, idx, requirePositiveDuration);
+        return new PermArgs(value, dc.durationSeconds, dc.modifier, dc.contexts);
+    }
+
+    private static MetaSetArgs parseMetaSetArgs(List<String> args, int keyIdx) {
+        String key = args.get(keyIdx);
+        int valueStart = keyIdx + 1;
+        int ctxStart = args.size();
+        while (ctxStart > valueStart + 1 && ContextParser.isContextToken(args.get(ctxStart - 1))) {
+            ctxStart--;
+        }
+        String value = joinArgs(args.subList(0, ctxStart), valueStart);
+        Map<String, String> contexts = ContextParser.parseTrailing(args, ctxStart);
+        return new MetaSetArgs(key, value, contexts);
     }
 
     private static String joinArgs(List<String> args, int startIdx) {
@@ -1282,9 +1841,21 @@ public final class BridgeCommandHandler {
                 + (cause.getMessage() != null && !cause.getMessage().isBlank() ? ": " + cause.getMessage() : "");
     }
 
-    private record DurationAndContexts(long durationSeconds, Map<String, String> contexts) {
+    private record DurationModifierContexts(long durationSeconds, String modifier, Map<String, String> contexts) {
     }
 
-    private record PermArgs(boolean value, long durationSeconds, Map<String, String> contexts) {
+    private record PermArgs(boolean value, long durationSeconds, String modifier, Map<String, String> contexts) {
+    }
+
+    private record MetaSetArgs(String key, String value, Map<String, String> contexts) {
+    }
+
+    private record PendingBulk(
+            String scope,
+            String action,
+            String field,
+            String value,
+            List<BulkConstraintRecord> constraints,
+            long expiresAtMillis) {
     }
 }

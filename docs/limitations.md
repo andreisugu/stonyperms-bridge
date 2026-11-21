@@ -18,7 +18,7 @@ Wildcards are expanded against that declared universe:
 ## Fabric: `fabric-permissions-api` scope & provider exclusivity
 
 - Listeners cover `PermissionCheckEvent`, `OptionRequestEvent`, `OfflinePermissionCheckEvent`, and `OfflineOptionRequestEvent`. Mods relying purely on raw vanilla permission levels without `fabric-permissions-api` are not intercepted (intentionally avoiding fragile NMS/mixin `ServerPlayer.permissions()` overrides).
-- `fabric-permissions-api` uses the first non-`DEFAULT` listener; never run a second permission provider (such as LuckPerms Fabric) alongside the bridge.
+- `fabric-permissions-api` uses the first non-`DEFAULT` listener; never run a second standalone permission provider mod alongside the bridge.
 
 ## Single-line bridge token files
 
