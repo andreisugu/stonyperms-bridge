@@ -158,4 +158,35 @@ class FabricBridgeConfigTest {
         assertThrows(FabricBridgeConfig.ConfigException.class,
                 () -> FabricBridgeConfig.load(configDir, null));
     }
+
+    @Test
+    void parsesStandaloneDatabaseConfigAndValidates() throws Exception {
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {
+                  "mode": "standalone",
+                  "standalone": {
+                    "storageType": "mariadb",
+                    "database": {
+                      "host": "db.internal",
+                      "port": 3307,
+                      "database": "fabric_perms",
+                      "username": "sp",
+                      "tablePrefix": "sp_fab_",
+                      "sslMode": "trust"
+                    }
+                  }
+                }
+                """);
+        FabricBridgeConfig cfg = FabricBridgeConfig.load(configDir, null, null);
+        assertEquals("mariadb", cfg.standalone().storageType());
+        assertEquals("db.internal", cfg.standalone().database().host());
+        assertEquals(3307, cfg.standalone().database().port());
+        assertEquals("sp_fab_", cfg.standalone().database().tablePrefix());
+
+        Files.writeString(configDir.resolve(FabricBridgeConfig.FILE_NAME), """
+                {"mode": "standalone", "standalone": {"storageType": "sqlite", "database": {"tablePrefix": "bad-prefix!"}}}
+                """);
+        assertThrows(FabricBridgeConfig.ConfigException.class,
+                () -> FabricBridgeConfig.load(configDir, null, null));
+    }
 }

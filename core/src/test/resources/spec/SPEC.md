@@ -161,3 +161,41 @@ Iterate user `(metaEntries, meta)` first, then each group in `ResolveInheritedGr
 - **JSON Storage**: `groups.json`, `tracks.json`, `logs.json` (max 1000 entries), `users/<uuid>.json`.
 - **Portable Web Codes**: `"sp1_"` + unpadded URL-safe Base64 of `gzip` (best compression) JSON,
   capped at 64 KiB decompressed.
+
+---
+
+## 10. Canonical Relational SQL Schema (v1)
+
+Both `gate-stonyperms` (`storage/sql.go`) and `stonyperms-bridge` (`local/SqlLocalStorage.java`) implement
+this shared normalized schema across **SQLite**, **MySQL / MariaDB**, and **PostgreSQL**, enabling
+cross-engine and cross-language portability alongside the `"json"` flat-file backend.
+
+### 10.1 Storage Types & Configuration
+- `storage_type` / `storageType`: `"json"` (default), `"sqlite"`, `"mysql"`, `"mariadb"`, `"postgresql"` (`"postgres"` normalized to `"postgresql"`).
+- `table_prefix` / `tablePrefix`: validated strictly against `^[a-zA-Z0-9_]{0,32}$` (default `"stonyperms_"`).
+- Password resolution order (never logged): environment variable (`STONYPERMS_DB_PASSWORD`, or `STONYPERMS_BRIDGE_DB_PASSWORD` -> `STONYPERMS_DB_PASSWORD` in Java bridge) -> inline `password` -> `password_file`/`passwordFile`.
+
+### 10.2 Table Layout (prefixed by `{p}`)
+1. `{p}schema_meta`: `version INTEGER PRIMARY KEY, applied_at BIGINT NOT NULL` (current schema version = `1`).
+2. `{p}groups`: `name VARCHAR(64) PRIMARY KEY, display_name VARCHAR(255) NOT NULL DEFAULT '', weight INTEGER NOT NULL DEFAULT 0`.
+3. `{p}group_nodes`: `group_name VARCHAR(64) NOT NULL, position INTEGER NOT NULL, perm_key VARCHAR(255) NOT NULL, value <BOOL> NOT NULL, expiry BIGINT NOT NULL DEFAULT 0, contexts TEXT NOT NULL, PRIMARY KEY (group_name, position), FOREIGN KEY (group_name) REFERENCES {p}groups(name) ON DELETE CASCADE`, index on `(perm_key)`.
+4. `{p}group_parents`: `group_name VARCHAR(64) NOT NULL, position INTEGER NOT NULL, parent_group VARCHAR(64) NOT NULL, expiry BIGINT NOT NULL DEFAULT 0, contexts TEXT NOT NULL, PRIMARY KEY (group_name, position)`, FK CASCADE to `{p}groups(name)`.
+5. `{p}group_affixes`: `group_name VARCHAR(64) NOT NULL, kind VARCHAR(8) NOT NULL, position INTEGER NOT NULL, priority INTEGER NOT NULL DEFAULT 0, value TEXT NOT NULL, expiry BIGINT NOT NULL DEFAULT 0, contexts TEXT NOT NULL, PRIMARY KEY (group_name, kind, position)`, FK CASCADE to `{p}groups(name)` (`kind` is `'prefix'` or `'suffix'`).
+6. `{p}group_meta`: `group_name VARCHAR(64) NOT NULL, meta_key VARCHAR(128) NOT NULL, meta_value TEXT NOT NULL, PRIMARY KEY (group_name, meta_key)`, FK CASCADE to `{p}groups(name)` (MySQL/MariaDB uses `COLLATE utf8mb4_bin` on `meta_key` so key casing is preserved).
+7. `{p}group_meta_entries`: `group_name VARCHAR(64) NOT NULL, position INTEGER NOT NULL, meta_key VARCHAR(128) NOT NULL, meta_value TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0, expiry BIGINT NOT NULL DEFAULT 0, contexts TEXT NOT NULL, PRIMARY KEY (group_name, position)`, FK CASCADE to `{p}groups(name)`.
+8. `{p}users`: `uuid CHAR(36) PRIMARY KEY, username VARCHAR(64) NOT NULL DEFAULT '', primary_group VARCHAR(64) NOT NULL DEFAULT 'default'`, index on `(username)`.
+9. `{p}user_nodes`: mirror of `{p}group_nodes` keyed by `user_uuid CHAR(36)` with FK CASCADE to `{p}users(uuid)`.
+10. `{p}user_parents`: mirror of `{p}group_parents` keyed by `user_uuid CHAR(36)` with FK CASCADE to `{p}users(uuid)`.
+11. `{p}user_affixes`: mirror of `{p}group_affixes` keyed by `user_uuid CHAR(36)` with FK CASCADE to `{p}users(uuid)`.
+12. `{p}user_meta`: mirror of `{p}group_meta` keyed by `user_uuid CHAR(36)` with FK CASCADE to `{p}users(uuid)`.
+13. `{p}user_meta_entries`: mirror of `{p}group_meta_entries` keyed by `user_uuid CHAR(36)` with FK CASCADE to `{p}users(uuid)`.
+14. `{p}tracks`: `name VARCHAR(64) PRIMARY KEY`.
+15. `{p}track_groups`: `track_name VARCHAR(64) NOT NULL, position INTEGER NOT NULL, group_name VARCHAR(64) NOT NULL, PRIMARY KEY (track_name, position)`, FK CASCADE to `{p}tracks(name)`.
+16. `{p}logs`: `id <AUTO_PK>, timestamp BIGINT NOT NULL, actor VARCHAR(128) NOT NULL, target_type VARCHAR(32) NOT NULL, target VARCHAR(128) NOT NULL, action TEXT NOT NULL`, index on `(timestamp, id)`.
+
+### 10.3 Persistence Semantics
+- **Slice ordering:** Nodes, parents, affixes, `metaEntries`, and track groups preserve exact insertion order via `position` (`0..N-1`) and `ORDER BY position ASC` on load.
+- **Contexts:** Stored as canonical compact JSON object with normalized lowercase keys (`"{}"` when empty).
+- **Atomic writes:** `SaveUser`, `SaveGroup`, `SaveTrack`, `DeleteUser`, `DeleteGroup`, and `DeleteTrack` run inside a database transaction (`BEGIN` ... `COMMIT`), upserting the parent row and replacing child rows atomically.
+- **Default seeding:** Inside a transaction on startup, seed `default`, `admin`, `ranks`, and the initial log entry **only** when `{p}groups` contains `0` rows.
+- **Logs:** SQL retains full append-only audit history; `LoadAll` returns up to the latest `1000` logs in chronological ascending order, matching JSON storage.

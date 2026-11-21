@@ -28,6 +28,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Collections;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -40,7 +42,7 @@ import java.util.stream.Stream;
  *   <li>{@code users/&lt;uuid&gt;.json} — StoredUser</li>
  * </ul>
  */
-public final class JsonLocalStorage {
+public final class JsonLocalStorage implements LocalStorage {
 
     public static final int MAX_LOG_ENTRIES = 1000;
 
@@ -132,6 +134,20 @@ public final class JsonLocalStorage {
 
     public Path baseDir() {
         return baseDir;
+    }
+
+    @Override
+    public String type() {
+        return "json";
+    }
+
+    @Override
+    public String describeTarget() {
+        return "json:" + baseDir;
+    }
+
+    @Override
+    public void close() {
     }
 
     private Path groupsPath() {
@@ -361,6 +377,48 @@ public final class JsonLocalStorage {
             }
             atomicWriteJson(logsPath(), logs);
         }
+    }
+
+    @Override
+    public List<LogEntry> getLogs(int limit) throws IOException {
+        synchronized (ioLock) {
+            if (Files.notExists(logsPath())) {
+                return List.of();
+            }
+            String raw = Files.readString(logsPath(), StandardCharsets.UTF_8);
+            List<LogEntry> existing = parseJsonOrNull(raw, LOGS_LIST_TYPE);
+            if (existing == null || existing.isEmpty()) {
+                return List.of();
+            }
+            int lim = limit > 0 ? limit : MAX_LOG_ENTRIES;
+            if (existing.size() > lim) {
+                return new ArrayList<>(existing.subList(existing.size() - lim, existing.size()));
+            }
+            return new ArrayList<>(existing);
+        }
+    }
+
+    public static String serializeContexts(Map<String, String> contexts) {
+        Map<String, String> norm = MetaEntry.normalizeContexts(contexts);
+        if (norm.isEmpty()) {
+            return "{}";
+        }
+        return COMPACT_GSON.toJson(new TreeMap<>(norm));
+    }
+
+    public static Map<String, String> deserializeContexts(String raw) {
+        if (raw == null) {
+            return Map.of();
+        }
+        String clean = raw.trim();
+        if (clean.isEmpty() || "{}".equals(clean) || "null".equals(clean)) {
+            return Map.of();
+        }
+        Map<String, String> parsed = parseJsonOrNull(clean, new TypeToken<Map<String, String>>() {}.getType());
+        if (parsed == null || parsed.isEmpty()) {
+            return Map.of();
+        }
+        return MetaEntry.normalizeContexts(parsed);
     }
 
     // -------------------------------------------------------------------------

@@ -20,6 +20,10 @@ dependencies {
     implementation(project(":core"))
     include(project(":core"))
     include("com.google.re2j:re2j:1.8")
+    include("com.zaxxer:HikariCP:7.1.0")
+    include("org.xerial:sqlite-jdbc:3.54.1.0")
+    include("org.mariadb.jdbc:mariadb-java-client:4.0.0")
+    include("org.postgresql:postgresql:42.7.14")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")

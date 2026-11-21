@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.stonyperms.bridge.core.DisplayFormat;
+import dev.stonyperms.bridge.core.local.DatabaseConfig;
 import dev.stonyperms.bridge.core.local.StandaloneConfig;
 
 import java.io.IOException;
@@ -58,7 +59,23 @@ public record FabricBridgeConfig(
                 "requestTimeoutMs": 2500
               },
               "standalone": {
+                "storageType": "json",
                 "storageDir": "stonyperms/data",
+                "database": {
+                  "file": "",
+                  "host": "127.0.0.1",
+                  "port": 0,
+                  "database": "stonyperms",
+                  "username": "stonyperms",
+                  "password": "",
+                  "passwordFile": "",
+                  "tablePrefix": "stonyperms_",
+                  "sslMode": "prefer",
+                  "maxPoolSize": 10,
+                  "minIdle": 5,
+                  "maxLifetimeSeconds": 1800,
+                  "connectTimeoutSeconds": 5
+                },
                 "defaultGroup": "default",
                 "primaryGroupCalculation": "stored",
                 "auditLog": true,
@@ -248,6 +265,47 @@ public record FabricBridgeConfig(
                 if (!storagePath.isAbsolute()) {
                     storagePath = configDir.resolve(storagePath);
                 }
+                String storageType;
+                try {
+                    storageType = StandaloneConfig.normalizeStorageType(
+                            string(standalone, "storageType", "json"));
+                } catch (IllegalArgumentException error) {
+                    throw new ConfigException(error.getMessage(), error);
+                }
+                JsonObject dbObj = object(standalone, "database");
+                String rawDbFile = string(dbObj, "file", "").trim();
+                if (!rawDbFile.isEmpty() && !":memory:".equals(rawDbFile) && !rawDbFile.startsWith("file:")) {
+                    Path dbPath = Path.of(rawDbFile);
+                    if (!dbPath.isAbsolute()) {
+                        rawDbFile = configDir.resolve(dbPath).toString();
+                    }
+                }
+                String rawPwFile = string(dbObj, "passwordFile", "").trim();
+                if (!rawPwFile.isEmpty()) {
+                    Path pwPath = Path.of(rawPwFile);
+                    if (!pwPath.isAbsolute()) {
+                        rawPwFile = configDir.resolve(pwPath).toString();
+                    }
+                }
+                DatabaseConfig dbCfg;
+                try {
+                    dbCfg = new DatabaseConfig(
+                            rawDbFile,
+                            string(dbObj, "host", "127.0.0.1"),
+                            integer(dbObj, "port", 0),
+                            string(dbObj, "database", "stonyperms"),
+                            string(dbObj, "username", "stonyperms"),
+                            string(dbObj, "password", ""),
+                            rawPwFile,
+                            string(dbObj, "tablePrefix", DatabaseConfig.DEFAULT_TABLE_PREFIX),
+                            string(dbObj, "sslMode", "prefer"),
+                            integer(dbObj, "maxPoolSize", 10),
+                            integer(dbObj, "minIdle", 5),
+                            longVal(dbObj, "maxLifetimeSeconds", 1800L),
+                            integer(dbObj, "connectTimeoutSeconds", 5));
+                } catch (IllegalArgumentException error) {
+                    throw new ConfigException(error.getMessage(), error);
+                }
                 JsonObject stackObj = object(standalone, "stack");
                 StandaloneConfig.StackConfig stackCfg = new StandaloneConfig.StackConfig(
                         bool(stackObj, "prefixEnabled", false),
@@ -260,7 +318,9 @@ public record FabricBridgeConfig(
                         string(stackObj, "suffixEndSpacer", ""),
                         bool(stackObj, "deduplicate", true));
                 standaloneCfg = new StandaloneConfig(
+                        storageType,
                         storagePath,
+                        dbCfg,
                         string(standalone, "defaultGroup", "default").trim(),
                         string(standalone, "primaryGroupCalculation", "stored").trim(),
                         stackCfg,

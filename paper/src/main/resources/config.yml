@@ -22,9 +22,25 @@ api:
 
 # Standalone mode configuration (used only when mode is "standalone").
 standalone:
-  # Directory containing groups.json, tracks.json, logs.json, and users/<uuid>.json.
+  # Storage engine: "json" (default flat-file), "sqlite", "mysql", "mariadb", or "postgresql".
+  storage-type: "json"
+  # Directory containing JSON files (or default stonyperms.db for sqlite).
   # Relative paths resolve inside plugins/StonyPermsBridge/.
   storage-dir: "data"
+  database:
+    file: ""                  # Optional sqlite path override (relative resolves under plugins/StonyPermsBridge/)
+    host: "127.0.0.1"
+    port: 0                   # 0 uses default port (3306 for mysql/mariadb, 5432 for postgresql)
+    database: "stonyperms"
+    username: "stonyperms"
+    password: ""
+    password-file: ""
+    table-prefix: "stonyperms_"
+    ssl-mode: "prefer"        # disable | prefer | trust | require | verify-ca | verify-full
+    max-pool-size: 10
+    min-idle: 5
+    max-lifetime-seconds: 1800
+    connect-timeout-seconds: 5
   default-group: "default"
   # Primary group calculation: "stored", "parents-by-weight", or "all-parents-by-weight".
   primary-group-calculation: "stored"

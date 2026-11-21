@@ -4,9 +4,11 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Objects;
 
-/** Configuration governing StonyPerms standalone local engine, storage, and web viewer URLs. */
+/** Configuration governing StonyPerms standalone local engine, storage backend, and web viewer URLs. */
 public record StandaloneConfig(
+        String storageType,
         Path storageDir,
+        DatabaseConfig database,
         String defaultGroup,
         String primaryGroupCalculation,
         StackConfig stackConfig,
@@ -41,8 +43,23 @@ public record StandaloneConfig(
         }
     }
 
+    /** Backward-compatible 7-arg constructor defaulting to JSON storage. */
+    public StandaloneConfig(
+            Path storageDir,
+            String defaultGroup,
+            String primaryGroupCalculation,
+            StackConfig stackConfig,
+            boolean auditLogEnabled,
+            String webBaseUrl,
+            long expiryCleanupSeconds) {
+        this("json", storageDir, DatabaseConfig.defaults(), defaultGroup,
+                primaryGroupCalculation, stackConfig, auditLogEnabled, webBaseUrl, expiryCleanupSeconds);
+    }
+
     public StandaloneConfig {
+        storageType = normalizeStorageType(storageType);
         storageDir = Objects.requireNonNull(storageDir, "storageDir");
+        database = database == null ? DatabaseConfig.defaults() : database;
         defaultGroup = (defaultGroup == null || defaultGroup.isBlank())
                 ? "default" : defaultGroup.trim().toLowerCase(Locale.ROOT);
         String calc = primaryGroupCalculation == null ? "stored" : primaryGroupCalculation.trim().toLowerCase(Locale.ROOT);
@@ -57,13 +74,31 @@ public record StandaloneConfig(
 
     public static StandaloneConfig defaults(Path storageDir) {
         return new StandaloneConfig(
+                "json",
                 storageDir,
+                DatabaseConfig.defaults(),
                 "default",
                 "stored",
                 StackConfig.defaults(),
                 true,
                 DEFAULT_WEB_URL,
                 60L);
+    }
+
+    public static String normalizeStorageType(String raw) {
+        String clean = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        if (clean.isEmpty() || clean.equals("json")) {
+            return "json";
+        }
+        return switch (clean) {
+            case "sqlite", "sqlite3" -> "sqlite";
+            case "mysql" -> "mysql";
+            case "mariadb" -> "mariadb";
+            case "postgres", "postgresql" -> "postgresql";
+            default -> throw new IllegalArgumentException(
+                    "Unsupported standalone storage type '" + raw
+                            + "' (expected json, sqlite, mysql, mariadb, or postgresql)");
+        };
     }
 
     private static String normalizeWebUrl(String raw) {

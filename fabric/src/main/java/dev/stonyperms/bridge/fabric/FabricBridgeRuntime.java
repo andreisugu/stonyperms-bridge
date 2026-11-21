@@ -399,7 +399,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         String error = lastError.isEmpty() ? "none" : lastError;
         if (config.isStandalone() && localBackend != null) {
             var mgr = localBackend.manager();
-            return "StonyPerms standalone: storage=" + config.standalone().storageDir()
+            return "StonyPerms standalone: storage=" + mgr.storage().describeTarget()
                     + ", revision=" + mgr.revision()
                     + ", users=" + mgr.usersCount()
                     + ", groups=" + mgr.groupsCount()
@@ -432,6 +432,10 @@ public final class FabricBridgeRuntime implements AutoCloseable {
                 + ", sse=" + sseState
                 + ", staleGrace=" + config.staleGraceSeconds() + "s"
                 + ", lastError=" + error;
+    }
+
+    public LocalStonyPermsBackend localBackend() {
+        return localBackend;
     }
 
     public FabricBridgeConfig config() {

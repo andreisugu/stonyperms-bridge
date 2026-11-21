@@ -124,7 +124,7 @@ public final class LocalPermissionManager implements AutoCloseable {
             "minecraft.command.ban");
 
     private final StandaloneConfig config;
-    private final JsonLocalStorage storage;
+    private final LocalStorage storage;
     private final LocalPermissionEngine engine;
     private final Consumer<ChangeEvent> eventListener;
 
@@ -140,7 +140,7 @@ public final class LocalPermissionManager implements AutoCloseable {
 
     public LocalPermissionManager(StandaloneConfig config, Consumer<ChangeEvent> eventListener) throws IOException {
         this.config = Objects.requireNonNull(config, "config");
-        this.storage = new JsonLocalStorage(config.storageDir());
+        this.storage = LocalStorageFactory.open(config);
         this.engine = new LocalPermissionEngine();
         this.engine.setPrimaryGroupCalculation(config.primaryGroupCalculation());
         this.engine.setStackConfig(config.stackConfig());
@@ -171,7 +171,7 @@ public final class LocalPermissionManager implements AutoCloseable {
         return engine;
     }
 
-    public JsonLocalStorage storage() {
+    public LocalStorage storage() {
         return storage;
     }
 
@@ -3381,6 +3381,10 @@ public final class LocalPermissionManager implements AutoCloseable {
     public void close() {
         if (cleanupScheduler != null) {
             cleanupScheduler.shutdownNow();
+        }
+        try {
+            storage.close();
+        } catch (IOException ignored) {
         }
     }
 }

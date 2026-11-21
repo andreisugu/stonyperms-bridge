@@ -212,7 +212,7 @@ public final class StonyPermsBridgeMod implements ModInitializer {
             fresh.start(server);
             if (config.isStandalone()) {
                 LOGGER.info("StonyPerms standalone using {} (server context: {}, write={}, applyToOps={})",
-                        config.standalone().storageDir(),
+                        fresh.localBackend() != null ? fresh.localBackend().manager().storage().describeTarget() : config.standalone().storageDir(),
                         config.serverName().isEmpty() ? "(none)" : config.serverName(),
                         fresh.api().isWriteEnabled(),
                         config.applyToOps());
