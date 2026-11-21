@@ -90,6 +90,12 @@ public final class DisplayFormat {
     }
 
     private static String resolveName(UserInfo user, String fallbackName) {
+        if (user != null) {
+            String nickname = user.meta().get("nickname");
+            if (nickname != null && !nickname.isBlank()) {
+                return nickname.trim();
+            }
+        }
         if (fallbackName != null && !fallbackName.isEmpty()) {
             return fallbackName;
         }
