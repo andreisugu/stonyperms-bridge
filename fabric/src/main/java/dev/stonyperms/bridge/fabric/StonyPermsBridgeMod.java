@@ -4,11 +4,16 @@ import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import dev.stonyperms.bridge.api.StonyPermsBridgeAPI;
+import dev.stonyperms.bridge.core.Decision;
 import dev.stonyperms.bridge.core.Snapshot;
+import dev.stonyperms.bridge.core.Tri;
 import dev.stonyperms.bridge.core.UserInfo;
 import dev.stonyperms.bridge.core.cmd.BridgeCommandHandler;
 import dev.stonyperms.bridge.core.cmd.CommandPlatform;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
+import net.fabricmc.fabric.api.permission.v1.PermissionContext;
+import net.fabricmc.fabric.api.permission.v1.PermissionEvents;
+import net.fabricmc.fabric.api.permission.v1.PermissionNode;
 import me.lucko.fabric.api.permissions.v0.OfflineOptionRequestEvent;
 import me.lucko.fabric.api.permissions.v0.OfflinePermissionCheckEvent;
 import me.lucko.fabric.api.permissions.v0.OptionRequestEvent;
@@ -146,6 +151,38 @@ public final class StonyPermsBridgeMod implements ModInitializer {
                 return CompletableFuture.completedFuture(Optional.empty());
             }
             return CompletableFuture.completedFuture(current.optionOffline(uuid, key));
+        });
+
+        PermissionEvents.ON_REQUEST.register(new PermissionEvents.OnRequest() {
+            @Override
+            public <T> T handlePermissionRequest(PermissionContext context, PermissionNode<T> node) {
+                FabricBridgeRuntime current = runtime;
+                if (current == null || context == null || node == null) {
+                    return null;
+                }
+                MinecraftServer srv = context.get(PermissionContext.SERVER);
+                if (srv == null) {
+                    srv = current.server();
+                }
+                ServerPlayer player = srv == null ? null : srv.getPlayerList().getPlayer(context.uuid());
+                if (player == null || current.isOpBypassed(srv, player)) {
+                    return null;
+                }
+                String raw = node.key().getNamespace() + "." + node.key().getPath();
+                String normalized = node.key().getNamespace() + "." + node.key().getPath().replace('_', '.');
+                Decision decision = current.resolve(player, normalized);
+                if (!decision.defined() && !raw.equals(normalized)) {
+                    decision = current.resolve(player, raw);
+                }
+                if (!decision.defined()) {
+                    return null;
+                }
+                try {
+                    return node.cast(decision.value() == Tri.TRUE);
+                } catch (RuntimeException ignored) {
+                    return null;
+                }
+            }
         });
 
         registerCommands();
