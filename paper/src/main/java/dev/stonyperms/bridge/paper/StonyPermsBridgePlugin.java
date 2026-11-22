@@ -315,6 +315,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
                     newConfig.sseReconnectMinMs(),
                     newConfig.sseReconnectMaxMs(),
                     this::handleChangeEvent);
+            stream.setOnConnect(this::reportCatalog);
             eventStream = stream;
             stream.start();
         }

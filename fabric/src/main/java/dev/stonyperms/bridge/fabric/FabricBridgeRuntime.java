@@ -143,6 +143,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
                     config.sseReconnectMinMs(),
                     config.sseReconnectMaxMs(),
                     this::handleSseEvent);
+            stream.setOnConnect(this::reportCatalog);
             this.eventStream = stream;
             stream.start();
         }

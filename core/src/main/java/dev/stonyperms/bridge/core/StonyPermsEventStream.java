@@ -33,6 +33,7 @@ public final class StonyPermsEventStream implements AutoCloseable {
     private final long reconnectMinMs;
     private final long reconnectMaxMs;
     private final Consumer<ChangeEvent> onEvent;
+    private volatile Runnable onConnect = () -> {};
     private final HttpClient http;
     private final Gson gson = new GsonBuilder().create();
     private final Object sleepLock = new Object();
@@ -84,6 +85,11 @@ public final class StonyPermsEventStream implements AutoCloseable {
         thread.start();
     }
 
+    /** Runs after every successful SSE (re)connect. */
+    public void setOnConnect(Runnable onConnect) {
+        this.onConnect = onConnect == null ? () -> {} : onConnect;
+    }
+
     public boolean connected() {
         return connected.get();
     }
@@ -104,6 +110,10 @@ public final class StonyPermsEventStream implements AutoCloseable {
                 wasConnected = streamOnce(() -> {
                     connected.set(true);
                     lastError = "";
+                    try {
+                        onConnect.run();
+                    } catch (RuntimeException ignored) {
+                    }
                 });
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
