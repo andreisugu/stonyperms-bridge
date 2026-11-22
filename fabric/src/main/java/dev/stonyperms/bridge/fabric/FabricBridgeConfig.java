@@ -1,17 +1,21 @@
 package dev.stonyperms.bridge.fabric;
 
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.stonyperms.bridge.core.DisplayFormat;
 import dev.stonyperms.bridge.core.local.DatabaseConfig;
 import dev.stonyperms.bridge.core.local.StandaloneConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Locale;
 
 public record FabricBridgeConfig(
@@ -45,9 +49,11 @@ public record FabricBridgeConfig(
 
     public static final int MIN_TOKEN_LENGTH = 16;
     public static final String FILE_NAME = "stonyperms-bridge.json";
+    private static final Logger LOGGER = LoggerFactory.getLogger("stonyperms-bridge");
 
     private static final String DEFAULT_CONFIG = """
             {
+              "configVersion": 2,
               "mode": "bridge",
               "api": {
                 "url": "http://127.0.0.1:8737",
@@ -211,6 +217,55 @@ public record FabricBridgeConfig(
         }
     }
 
+    private static JsonObject migrateConfig(Path file, JsonObject root) {
+        int version = 0;
+        try {
+            if (root.has("configVersion")) {
+                version = root.get("configVersion").getAsInt();
+            }
+        } catch (RuntimeException ignored) {
+            version = 0;
+        }
+        if (version >= 2) {
+            return root;
+        }
+        try {
+            String mode = root.has("mode") && root.get("mode").isJsonPrimitive()
+                    ? root.get("mode").getAsString() : "bridge";
+            boolean standalone = "standalone".equalsIgnoreCase(mode);
+            JsonObject existingWrite = object(root, "write");
+            boolean hadWriteEnabled = existingWrite.has("enabled");
+            Path backup = file.resolveSibling(file.getFileName() + ".bak-v" + version + "-" + System.currentTimeMillis());
+            Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
+            JsonObject defaults = JsonParser.parseString(DEFAULT_CONFIG).getAsJsonObject();
+            deepMergeDefaults(root, defaults);
+            if (standalone && !hadWriteEnabled) {
+                root.getAsJsonObject("write").addProperty("enabled", true);
+            }
+            root.addProperty("configVersion", 2);
+            String pretty = new GsonBuilder().setPrettyPrinting().create().toJson(root);
+            Files.writeString(file, pretty, StandardCharsets.UTF_8);
+            LOGGER.info("Migrated {} v{} -> v2 (backup: {})", FILE_NAME, version, backup.getFileName());
+        } catch (Exception error) {
+            LOGGER.warn("Could not migrate {}: {}", FILE_NAME, error.getMessage());
+        }
+        return root;
+    }
+
+    private static void deepMergeDefaults(JsonObject target, JsonObject defaults) {
+        for (var entry : defaults.entrySet()) {
+            String key = entry.getKey();
+            JsonElement value = entry.getValue();
+            if (!target.has(key)) {
+                target.add(key, value.deepCopy());
+                continue;
+            }
+            if (value.isJsonObject() && target.get(key).isJsonObject()) {
+                deepMergeDefaults(target.getAsJsonObject(key), value.getAsJsonObject());
+            }
+        }
+    }
+
     public static FabricBridgeConfig load(Path configDir) throws ConfigException {
         return load(
                 configDir,
@@ -230,6 +285,7 @@ public record FabricBridgeConfig(
                 Files.writeString(file, DEFAULT_CONFIG, StandardCharsets.UTF_8);
             }
             JsonObject root = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
+            root = migrateConfig(file, root);
             JsonObject api = object(root, "api");
             JsonObject write = object(root, "write");
             JsonObject sse = object(root, "sse");

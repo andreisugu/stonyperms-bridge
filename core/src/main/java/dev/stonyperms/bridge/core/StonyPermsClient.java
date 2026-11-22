@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -164,6 +165,23 @@ public final class StonyPermsClient implements StonyPermsBackend {
         JsonObject object = parseObject(response.body(), "revision");
         require(object, "revision", "revision");
         return gson.fromJson(object, RevisionResponse.class).revision;
+    }
+
+    /** Publishes this backend's permission/context vocabulary for editor autocomplete. */
+    public void reportCatalog(String server, Collection<String> permissions, Map<String, List<String>> contexts)
+            throws IOException, InterruptedException {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("server", server);
+        body.put("permissions", permissions == null ? List.of() : permissions);
+        body.put("contexts", contexts == null ? Map.of() : contexts);
+        HttpRequest request = readRequest("/v1/backends/catalog")
+                .header("Content-Type", "application/json")
+                .POST(jsonBody(body))
+                .build();
+        HttpResponse<String> response = send(request);
+        if (response.statusCode() != 200) {
+            throw failure(response.statusCode(), response.body());
+        }
     }
 
     @Override

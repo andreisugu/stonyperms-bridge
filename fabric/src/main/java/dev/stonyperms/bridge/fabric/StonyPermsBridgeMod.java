@@ -135,6 +135,7 @@ public final class StonyPermsBridgeMod implements ModInitializer {
             if (current.isOpBypassed(srv, player)) {
                 return TriState.DEFAULT;
             }
+            current.recordObservedPermission(permission);
             return FabricPermissionMapper.map(current.resolve(player, permission));
         });
 
@@ -181,6 +182,10 @@ public final class StonyPermsBridgeMod implements ModInitializer {
                 }
                 String raw = node.key().getNamespace() + "." + node.key().getPath();
                 String normalized = node.key().getNamespace() + "." + node.key().getPath().replace('_', '.');
+                current.recordObservedPermission(normalized);
+                if (!raw.equals(normalized)) {
+                    current.recordObservedPermission(raw);
+                }
                 Decision decision = player != null
                         ? current.resolve(player, normalized)
                         : current.resolveOffline(context.uuid(), normalized);

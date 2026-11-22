@@ -1,4 +1,6 @@
 # StonyPerms bridge (Paper)
+# Schema version used by automatic config migration.
+config-version: 2
 # Mode: "bridge" (backed by Gate HTTP/SSE) or "standalone" (self-contained local JSON store + command /sp).
 mode: "bridge"
 

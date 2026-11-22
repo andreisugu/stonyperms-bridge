@@ -23,9 +23,12 @@ import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -51,6 +54,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
     private final ScheduledExecutorService scheduler;
     private final RefreshGate refreshGate = new RefreshGate(64);
     private final Map<UUID, LastSnapshot> lastSnapshots = new ConcurrentHashMap<>();
+    private final java.util.Set<String> observedPermissions = ConcurrentHashMap.newKeySet();
     private final AtomicLong lastFailureLogAt = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private volatile MinecraftServer server;
@@ -151,6 +155,63 @@ public final class FabricBridgeRuntime implements AutoCloseable {
                 0,
                 config.refreshSeconds(),
                 TimeUnit.SECONDS);
+        if (!config.isStandalone()) {
+            scheduler.scheduleWithFixedDelay(
+                    () -> {
+                        MinecraftServer srv = this.server;
+                        if (srv != null && !closed.get()) {
+                            srv.execute(this::reportCatalog);
+                        }
+                    },
+                    5,
+                    300,
+                    TimeUnit.SECONDS);
+        }
+    }
+
+    /** Records permission nodes observed from mods for the backend catalog. */
+    public void recordObservedPermission(String permission) {
+        if (permission == null) {
+            return;
+        }
+        String clean = permission.trim();
+        if (clean.isEmpty() || clean.length() > 256 || observedPermissions.size() >= 20000) {
+            return;
+        }
+        observedPermissions.add(clean);
+    }
+
+    private void reportCatalog() {
+        MinecraftServer srv = this.server;
+        if (!(backend instanceof StonyPermsClient client) || srv == null || closed.get()) {
+            return;
+        }
+        TreeSet<String> permissions = new TreeSet<>(observedPermissions);
+        TreeSet<String> dimensionSet = new TreeSet<>();
+        for (var level : srv.getAllLevels()) {
+            dimensionSet.add(level.dimension().identifier().getPath());
+        }
+        List<String> dimensions = List.copyOf(dimensionSet);
+        Map<String, List<String>> contexts = new LinkedHashMap<>();
+        String serverName = config.serverName();
+        if (serverName != null && !serverName.isBlank()) {
+            contexts.put("server", List.of(serverName));
+        } else {
+            serverName = "fabric";
+        }
+        contexts.put("world", dimensions);
+        contexts.put("dimension-type", dimensions);
+        contexts.put("gamemode", List.of("survival", "creative", "adventure", "spectator"));
+        String catalogServer = serverName;
+        io.submit(() -> {
+            try {
+                client.reportCatalog(catalogServer, permissions, contexts);
+            } catch (Exception error) {
+                if (config.debug()) {
+                    logger.debug("Backend catalog push failed: {}", error.getMessage());
+                }
+            }
+        });
     }
 
     public boolean shouldBypassForOp(boolean isOp) {
@@ -444,7 +505,13 @@ public final class FabricBridgeRuntime implements AutoCloseable {
 
     public Map<String, String> contexts(ServerPlayer player) {
         String world = player.level().dimension().identifier().toString();
-        return FabricContext.of(config.serverName(), world);
+        Map<String, String> contexts = new LinkedHashMap<>(FabricContext.of(config.serverName(), world));
+        contexts.put("dimension-type", player.level().dimension().identifier().getPath());
+        String gamemode = player.isCreative() ? "creative"
+                : player.isSpectator() ? "spectator"
+                : "survival";
+        contexts.put("gamemode", gamemode);
+        return contexts;
     }
 
     public Map<String, String> defaultContexts() {

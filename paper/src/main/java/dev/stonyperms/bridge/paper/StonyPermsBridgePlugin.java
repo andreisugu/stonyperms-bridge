@@ -24,6 +24,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
+import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
@@ -38,12 +39,18 @@ import org.bukkit.plugin.ServicePriority;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.TreeSet;
 import java.util.logging.Level;
 import java.util.Map;
 import java.util.Optional;
@@ -84,6 +91,7 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
     private Runnable placeholderCleanup = () -> {};
     private Runnable vaultCleanup = () -> {};
     private int refreshTaskId = -1;
+    private BukkitTask catalogTask;
     private volatile String lastError = "";
 
     public static Optional<StonyPermsBridgeAPI> getApi() {
@@ -102,6 +110,8 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             return thread;
         });
         saveDefaultConfig();
+        migrateConfigFile();
+        reloadConfig();
 
         if (!reloadBridge()) {
             getServer().getPluginManager().disablePlugin(this);
@@ -151,6 +161,45 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         if (io != null) {
             io.shutdownNow();
         }
+    }
+
+    private void migrateConfigFile() {
+        Path file = new File(getDataFolder(), "config.yml").toPath();
+        if (!Files.isRegularFile(file)) {
+            return;
+        }
+        try {
+            String text = Files.readString(file, StandardCharsets.UTF_8);
+            int version = configVersion(text);
+            if (version >= 2) {
+                return;
+            }
+            Path backup = file.resolveSibling("config.yml.bak-v" + version + "-" + System.currentTimeMillis());
+            Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
+            text = text.replaceAll("(?m)^config-version:.*\\R?", "");
+            StringBuilder prefix = new StringBuilder("config-version: 2\n");
+            if (!text.startsWith("mode:") && !text.contains("\nmode:")) {
+                prefix.append("mode: \"bridge\"\n");
+            }
+            Files.writeString(file, prefix + text, StandardCharsets.UTF_8);
+            getLogger().info("Migrated config.yml v" + version + " -> v2 (backup: " + backup.getFileName() + ")");
+        } catch (IOException error) {
+            getLogger().log(Level.WARNING, "Could not migrate config.yml: " + error.getMessage(), error);
+        }
+    }
+
+    private static int configVersion(String text) {
+        for (String line : text.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("config-version:")) {
+                try {
+                    return Integer.parseInt(trimmed.substring("config-version:".length()).trim());
+                } catch (NumberFormatException ignored) {
+                    return 0;
+                }
+            }
+        }
+        return 0;
     }
 
     private boolean reloadBridge() {
@@ -378,12 +427,49 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         long ticks = 20L * bridgeConfig.refreshSeconds();
         refreshTaskId = getServer().getScheduler().runTaskTimer(
                 this, this::refreshAllOnline, ticks, ticks).getTaskId();
+        if (!bridgeConfig.isStandalone() && backend instanceof StonyPermsClient) {
+            catalogTask = getServer().getScheduler().runTaskTimerAsynchronously(
+                    this, this::reportCatalog, 100L, 20L * 300L);
+        }
     }
 
     private void stopScheduler() {
         if (refreshTaskId != -1) {
             getServer().getScheduler().cancelTask(refreshTaskId);
             refreshTaskId = -1;
+        }
+        if (catalogTask != null) {
+            catalogTask.cancel();
+            catalogTask = null;
+        }
+    }
+
+    private void reportCatalog() {
+        if (!(backend instanceof StonyPermsClient client) || bridgeConfig == null) {
+            return;
+        }
+        try {
+            TreeSet<String> permissions = new TreeSet<>();
+            getServer().getPluginManager().getPermissions().forEach(permission -> {
+                if (permission != null && permission.getName() != null && !permission.getName().isBlank()) {
+                    permissions.add(permission.getName());
+                }
+            });
+            Map<String, List<String>> contexts = new LinkedHashMap<>();
+            String serverName = bridgeConfig.serverName();
+            if (serverName == null || serverName.isBlank()) {
+                serverName = "paper";
+            } else {
+                contexts.put("server", List.of(serverName));
+            }
+            contexts.put("world", Bukkit.getWorlds().stream().map(World::getName).sorted().toList());
+            contexts.put("dimension-type", List.of("overworld", "the_nether", "the_end"));
+            contexts.put("gamemode", List.of("survival", "creative", "adventure", "spectator"));
+            client.reportCatalog(serverName, permissions, contexts);
+        } catch (Exception error) {
+            if (bridgeConfig.debug()) {
+                getLogger().log(Level.FINE, "Backend catalog push failed: " + error.getMessage(), error);
+            }
         }
     }
 
@@ -672,6 +758,8 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
             contexts.put("server", bridgeConfig.serverName());
         }
         contexts.put("world", player.getWorld().getName());
+        contexts.put("dimension-type", dimensionType(player.getWorld()));
+        contexts.put("gamemode", player.getGameMode().name().toLowerCase(Locale.ROOT));
         return contexts;
     }
 
@@ -682,8 +770,23 @@ public final class StonyPermsBridgePlugin extends JavaPlugin implements Listener
         }
         if (worldName != null && !worldName.isBlank()) {
             contexts.put("world", worldName);
+            World world = Bukkit.getWorld(worldName);
+            if (world != null) {
+                contexts.put("dimension-type", dimensionType(world));
+            }
         }
         return contexts;
+    }
+
+    private static String dimensionType(World world) {
+        if (world == null) {
+            return "overworld";
+        }
+        return switch (world.getEnvironment()) {
+            case NETHER -> "the_nether";
+            case THE_END -> "the_end";
+            default -> "overworld";
+        };
     }
 
     private Map<String, String> defaultContexts() {
