@@ -188,10 +188,13 @@ public final class FabricBridgeRuntime implements AutoCloseable {
             return;
         }
         TreeSet<String> permissions = new TreeSet<>(observedPermissions);
+        TreeSet<String> worldSet = new TreeSet<>();
         TreeSet<String> dimensionSet = new TreeSet<>();
         for (var level : srv.getAllLevels()) {
+            worldSet.add(level.dimension().identifier().toString());
             dimensionSet.add(level.dimension().identifier().getPath());
         }
+        List<String> worlds = List.copyOf(worldSet);
         List<String> dimensions = List.copyOf(dimensionSet);
         Map<String, List<String>> contexts = new LinkedHashMap<>();
         String serverName = config.serverName();
@@ -200,7 +203,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         } else {
             serverName = "fabric";
         }
-        contexts.put("world", dimensions);
+        contexts.put("world", worlds);
         contexts.put("dimension-type", dimensions);
         contexts.put("gamemode", List.of("survival", "creative", "adventure", "spectator"));
         String catalogServer = serverName;
@@ -508,10 +511,7 @@ public final class FabricBridgeRuntime implements AutoCloseable {
         String world = player.level().dimension().identifier().toString();
         Map<String, String> contexts = new LinkedHashMap<>(FabricContext.of(config.serverName(), world));
         contexts.put("dimension-type", player.level().dimension().identifier().getPath());
-        String gamemode = player.isCreative() ? "creative"
-                : player.isSpectator() ? "spectator"
-                : "survival";
-        contexts.put("gamemode", gamemode);
+        contexts.put("gamemode", player.gameMode().getName().toLowerCase(Locale.ROOT));
         return contexts;
     }
 
